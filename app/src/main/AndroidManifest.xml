@@ -20,6 +20,9 @@
             </intent-filter>
         </activity>
 
+        <activity android:name=".FolderActivity" android:exported="false" />
+        <activity android:name=".ViewerActivity" android:exported="false" />
+
         <service android:name=".WatcherService" android:exported="false" />
     </application>
 </manifest>
