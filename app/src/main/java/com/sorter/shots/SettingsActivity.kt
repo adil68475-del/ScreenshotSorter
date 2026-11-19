@@ -145,8 +145,8 @@ class SettingsActivity : Activity() {
             pm.addView(Ui.row(this, "Notifications", "Shows the small \"running\" icon",
                 Ui.status(this, Perms.notif(this))) { Perms.askNotif(this) })
         }
-        pm.addView(Ui.row(this, "Phone's own app settings", "On Tecno, Infinix and Xiaomi phones also allow Auto-start here",
-            link("Open ›")) { Perms.openAppInfo(this) })
+        pm.addView(Ui.row(this, "Protect from phone cleaners", "Stops \"boost\" and cleaner apps from closing this app",
+            link("Guide ›")) { protectSheet(this) })
         val running = Watchdog.running(this)
         pm.addView(
             Ui.row(

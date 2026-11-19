@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.text.Editable
 import android.text.InputType
 import android.text.TextUtils
@@ -27,6 +28,7 @@ private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 class MainActivity : Activity() {
     private lateinit var foldersBox: LinearLayout
     private lateinit var pillsRow: LinearLayout
+    private lateinit var noticeBox: LinearLayout
     private lateinit var searchBox: EditText
     private lateinit var backdrop: Backdrop
     private lateinit var scroll: ScrollView
@@ -103,6 +105,10 @@ class MainActivity : Activity() {
         pLp.topMargin = dp(8)
         col.addView(pillsRow, pLp)
 
+        noticeBox = LinearLayout(this)
+        noticeBox.orientation = LinearLayout.VERTICAL
+        col.addView(noticeBox, LinearLayout.LayoutParams(MATCH, WRAP))
+
         col.addView(View(this), LinearLayout.LayoutParams(MATCH, dp(14)))
 
         foldersBox = LinearLayout(this)
@@ -128,10 +134,13 @@ class MainActivity : Activity() {
         }
         backdrop.start()
         // The watcher starts by itself as soon as the permissions are there.
+        val beat = Prefs.sp(this).getLong("beat", 0L)
+        val wasKilled = Perms.core(this) && !Watchdog.running(this) && beat > 0L && killedByCleaner(beat)
         if (Perms.core(this)) {
             Watchdog.schedule(this)
             Watchdog.ensure(this)
         }
+        refreshNotice(if (wasKilled) beat else 0L)
         updateGate()
         refreshPills()
         refreshFolders()
@@ -145,6 +154,51 @@ class MainActivity : Activity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         updateGate()
+    }
+
+    // ------------------------------------------------------------ "stopped by a cleaner" notice
+
+    // True if the last sign of life is newer than the last reboot and the last app update.
+    private fun killedByCleaner(beat: Long): Boolean {
+        val boot = System.currentTimeMillis() - SystemClock.elapsedRealtime()
+        val upd = try {
+            packageManager.getPackageInfo(packageName, 0).lastUpdateTime
+        } catch (e: Exception) {
+            0L
+        }
+        return beat > boot && beat > upd
+    }
+
+    private fun refreshNotice(beat: Long) {
+        noticeBox.removeAllViews()
+        val sp = Prefs.sp(this)
+        if (beat == 0L || sp.getLong("noticeBeat", 0L) == beat) return
+        val card = Ui.panel(this)
+        card.addView(Ui.text(this, "⚠  Your phone stopped the watcher", 16f, Ui.fg(), Ui.medium()))
+        val msg = Ui.text(
+            this,
+            "A cleaner or battery saver closed Screenshot Sorter (last active ${fmtDate(beat)}). It is running again now. Protect it so this doesn't happen again.",
+            13f, Ui.muted()
+        )
+        msg.setPadding(0, dp(4), 0, dp(6))
+        card.addView(msg)
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        val protect = Ui.button(this, "Protect it", true, true) { protectSheet(this) }
+        val dismiss = Ui.button(this, "Dismiss", false, true) {
+            sp.edit().putLong("noticeBeat", beat).apply()
+            refreshNotice(0L)
+        }
+        protect.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1.4f)
+        val dLp = LinearLayout.LayoutParams(0, WRAP, 1f)
+        dLp.leftMargin = dp(8)
+        dismiss.layoutParams = dLp
+        row.addView(protect)
+        row.addView(dismiss)
+        card.addView(row, LinearLayout.LayoutParams(MATCH, WRAP))
+        val lp = LinearLayout.LayoutParams(MATCH, WRAP)
+        lp.topMargin = dp(10)
+        noticeBox.addView(card, lp)
     }
 
     // ------------------------------------------------------------ mandatory permission pop-up
@@ -193,6 +247,13 @@ class MainActivity : Activity() {
                     Ui.status(this, Perms.notif(this))) { Perms.askNotif(this) }
             )
         }
+        val tip = Ui.text(
+            this,
+            "Tip: if your phone has a cleaner or booster app, add Screenshot Sorter to its whitelist. See Settings → Protect from phone cleaners.",
+            12f, Ui.muted()
+        )
+        tip.setPadding(dp(4), dp(8), dp(4), dp(2))
+        c.addView(tip)
         if (core) {
             c.addView(Ui.button(this, "Continue", true, true) {
                 Prefs.sp(this).edit().putBoolean("gateSeen", true).apply()

@@ -34,6 +34,15 @@ class WatcherService : Service() {
         }
     }
 
+    // Written every minute. If the app is opened later and the watcher is not running,
+    // this timestamp tells us when a cleaner stopped it.
+    private val heartbeat = object : Runnable {
+        override fun run() {
+            Prefs.sp(this@WatcherService).edit().putLong("beat", System.currentTimeMillis()).apply()
+            handler.postDelayed(this, 60_000L)
+        }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun notification(): Notification =
@@ -58,6 +67,7 @@ class WatcherService : Service() {
         startForeground(1, notification())
         for (u in uris) contentResolver.registerContentObserver(u, true, observer)
         Watchdog.schedule(this)
+        heartbeat.run()
         try {
             Trash.purgeOld(this)
         } catch (_: Exception) {
@@ -72,6 +82,7 @@ class WatcherService : Service() {
 
     override fun onDestroy() {
         contentResolver.unregisterContentObserver(observer)
+        handler.removeCallbacks(heartbeat)
         popup?.dismiss()
         Watchdog.kick(this)
         super.onDestroy()

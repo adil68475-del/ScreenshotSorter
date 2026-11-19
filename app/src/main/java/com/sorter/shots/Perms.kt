@@ -57,6 +57,31 @@ object Perms {
         }
     }
 
+    // Auto-start / protected-apps screens of common phone brands (tries each, falls back to app info).
+    private val AUTOSTART = listOf(
+        "com.miui.securitycenter" to "com.miui.permcenter.autostart.AutoStartManagementActivity",
+        "com.huawei.systemmanager" to "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
+        "com.coloros.safecenter" to "com.coloros.safecenter.permission.startup.StartupAppListActivity",
+        "com.oppo.safe" to "com.oppo.safe.permission.startup.StartupAppListActivity",
+        "com.vivo.permissionmanager" to "com.vivo.permissionmanager.activity.BgStartUpManagerActivity",
+        "com.samsung.android.lool" to "com.samsung.android.sm.ui.battery.BatteryActivity",
+        "com.transsion.phonemaster" to "com.cyin.himgr.autostart.AutoStartActivity",
+        "com.itel.autobootmanager" to "com.itel.autobootmanager.activity.AutoBootMgrActivity"
+    )
+
+    fun openAutoStart(act: Activity) {
+        for ((pkg, cls) in AUTOSTART) {
+            try {
+                val i = Intent()
+                i.component = ComponentName(pkg, cls)
+                act.startActivity(i)
+                return
+            } catch (_: Exception) {
+            }
+        }
+        openAppInfo(act)
+    }
+
     fun openAppInfo(act: Activity) {
         act.startActivity(
             Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${act.packageName}"))
@@ -116,4 +141,22 @@ class WatchdogJob : JobService() {
     }
 
     override fun onStopJob(params: JobParameters?): Boolean = true
+}
+
+// Explains how to stop phone cleaners from force-stopping the app.
+fun protectSheet(act: Activity) {
+    Sheet.panel(act, "Keep it running") { body ->
+        val t = Ui.text(
+            act,
+            "Cleaner and \"boost\" buttons can force-stop apps. After a force-stop Android blocks everything until the app is opened again, so no app can restart itself. The fix is to tell your phone to leave this app alone:\n\n" +
+                "1. Open Recent apps and lock Screenshot Sorter (tap its lock icon, or pull its card down).\n\n" +
+                "2. Open your phone's cleaner (Phone Master on Tecno, Infinix and itel), go to its settings and add Screenshot Sorter to the Whitelist / Protected apps list. The wording differs a little between phones.\n\n" +
+                "3. Allow Auto-start for the app, and set its battery use to Unrestricted.",
+            13f, Ui.muted()
+        )
+        t.setPadding(Ui.dp(act, 4), Ui.dp(act, 10), Ui.dp(act, 4), Ui.dp(act, 8))
+        body.addView(t)
+        body.addView(Ui.button(act, "Open auto-start settings", true, true) { Perms.openAutoStart(act) })
+        body.addView(Ui.button(act, "Open battery settings", false, true) { Perms.openBattery(act) })
+    }
 }
