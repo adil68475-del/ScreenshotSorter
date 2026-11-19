@@ -11,7 +11,6 @@ import android.content.Intent
 import android.database.ContentObserver
 import android.net.Uri
 import android.os.Bundle
-import android.os.Environment
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -37,7 +36,18 @@ class WatcherService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int) = START_STICKY
+    private fun notification(): Notification =
+        Notification.Builder(this, "watch")
+            .setContentTitle("Screenshot Sorter is running")
+            .setContentText("Ready to sort your next screenshot")
+            .setSmallIcon(android.R.drawable.ic_menu_gallery)
+            .setOngoing(true)
+            .build()
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startForeground(1, notification())
+        return START_STICKY
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -45,21 +55,25 @@ class WatcherService : Service() {
         nm.createNotificationChannel(
             NotificationChannel("watch", "Watching for screenshots", NotificationManager.IMPORTANCE_LOW)
         )
-        val n = Notification.Builder(this, "watch")
-            .setContentTitle("Screenshot Sorter is watching")
-            .setSmallIcon(android.R.drawable.ic_menu_gallery)
-            .build()
-        startForeground(1, n)
+        startForeground(1, notification())
         for (u in uris) contentResolver.registerContentObserver(u, true, observer)
+        Watchdog.schedule(this)
         try {
             Trash.purgeOld(this)
         } catch (_: Exception) {
         }
     }
 
+    // Swiped away from recent apps: ask the watchdog to make sure we are still alive.
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        Watchdog.kick(this)
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
         contentResolver.unregisterContentObserver(observer)
         popup?.dismiss()
+        Watchdog.kick(this)
         super.onDestroy()
     }
 
@@ -129,16 +143,12 @@ class WatcherService : Service() {
     }
 }
 
-// Starts the watcher again after the phone restarts (if you had it on).
+// Starts the watcher after the phone restarts and after the app is updated.
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
-        if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
-        val sp = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
-        if (!sp.getBoolean("autostart", true) || !sp.getBoolean("watching", false)) return
-        if (!Settings.canDrawOverlays(ctx) || !Environment.isExternalStorageManager()) return
-        try {
-            ctx.startForegroundService(Intent(ctx, WatcherService::class.java))
-        } catch (_: Exception) {
-        }
+        val a = intent.action
+        if (a != Intent.ACTION_BOOT_COMPLETED && a != Intent.ACTION_MY_PACKAGE_REPLACED) return
+        Watchdog.schedule(ctx)
+        Watchdog.ensure(ctx)
     }
 }

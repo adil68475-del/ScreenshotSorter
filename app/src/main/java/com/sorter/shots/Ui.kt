@@ -301,6 +301,9 @@ object Ui {
         return box
     }
 
+    fun status(ctx: Context, ok: Boolean): TextView =
+        if (ok) text(ctx, "✓", 18f, GREEN, medium()) else text(ctx, "Allow ›", 14f, Theme.accent, medium())
+
     fun onOffPill(ctx: Context, on: Boolean): TextView {
         val t = text(ctx, if (on) "ON" else "OFF", 12f, if (on) Color.WHITE else muted(), medium())
         t.gravity = Gravity.CENTER

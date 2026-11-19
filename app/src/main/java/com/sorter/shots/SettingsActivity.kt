@@ -1,8 +1,10 @@
 package com.sorter.shots
 
 import android.app.Activity
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -50,17 +52,22 @@ class SettingsActivity : Activity() {
         setContentView(backdrop.root)
         Ui.styleWindow(this)
         Ui.fadeIn(sv)
-        render()
     }
 
     override fun onResume() {
         super.onResume()
         backdrop.start()
+        render() // refresh the permission ticks after coming back from system settings
     }
 
     override fun onPause() {
         super.onPause()
         backdrop.stop()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        render()
     }
 
     private fun bumpTheme() {
@@ -82,9 +89,11 @@ class SettingsActivity : Activity() {
 
     private fun small(s: String): TextView {
         val t = Ui.text(this, s, 13f, Ui.muted(), Ui.medium())
-        t.setPadding(dp(4), dp(12), 0, dp(0))
+        t.setPadding(dp(4), dp(12), 0, 0)
         return t
     }
+
+    private fun link(s: String): TextView = Ui.text(this, s, 14f, Theme.accent, Ui.medium())
 
     private fun swatches(card: LinearLayout) {
         val per = 6
@@ -123,6 +132,32 @@ class SettingsActivity : Activity() {
     private fun render() {
         body.removeAllViews()
         val sp = Prefs.sp(this)
+
+        // ---- permissions (they live here, not on the main screen)
+        val pm = section("PERMISSIONS")
+        pm.addView(Ui.row(this, "Display over other apps", "Shows the folder popup on your screenshot",
+            Ui.status(this, Perms.overlay(this))) { Perms.openOverlay(this) })
+        pm.addView(Ui.row(this, "All files access", "Lets the app move pictures into your folders",
+            Ui.status(this, Perms.files())) { Perms.openFiles(this) })
+        pm.addView(Ui.row(this, "Keep running in background", "Stops the phone from closing the app (recommended)",
+            Ui.status(this, Perms.battery(this))) { Perms.openBattery(this) })
+        if (Build.VERSION.SDK_INT >= 33) {
+            pm.addView(Ui.row(this, "Notifications", "Shows the small \"running\" icon",
+                Ui.status(this, Perms.notif(this))) { Perms.askNotif(this) })
+        }
+        pm.addView(Ui.row(this, "Phone's own app settings", "On Tecno, Infinix and Xiaomi phones also allow Auto-start here",
+            link("Open ›")) { Perms.openAppInfo(this) })
+        val running = Watchdog.running(this)
+        pm.addView(
+            Ui.row(
+                this, "Watcher",
+                if (running) "Running in the background, all the time" else "Not running yet. Allow the permissions above.",
+                if (running) Ui.text(this, "Running ✓", 14f, Ui.GREEN, Ui.medium()) else link("Start ›")
+            ) {
+                Watchdog.ensure(this)
+                body.postDelayed({ render() }, 700)
+            }
+        )
 
         // ---- appearance
         val ap = section("APPEARANCE")
@@ -169,7 +204,7 @@ class SettingsActivity : Activity() {
             }
         )
         if (aiOn) {
-            ai.addView(Ui.row(this, "Forget what the AI learned", null, Ui.text(this, "Reset ›", 14f, Theme.accent, Ui.medium())) {
+            ai.addView(Ui.row(this, "Forget what the AI learned", null, link("Reset ›")) {
                 Brain.resetAll(this)
                 Toast.makeText(this, "AI memory cleared", Toast.LENGTH_SHORT).show()
             })
@@ -177,21 +212,10 @@ class SettingsActivity : Activity() {
 
         // ---- general
         val gn = section("GENERAL")
-        val auto = sp.getBoolean("autostart", true)
-        gn.addView(
-            Ui.row(
-                this, "Start after restart",
-                "Turns the watcher back on when the phone restarts. Some phones also need Auto-start allowed in phone settings.",
-                Ui.onOffPill(this, auto)
-            ) {
-                sp.edit().putBoolean("autostart", !auto).apply()
-                render()
-            }
-        )
-        gn.addView(Ui.row(this, "Back up everything (ZIP)", "Saved to Downloads/ScreenshotSorter", Ui.text(this, "Export ›", 14f, Theme.accent, Ui.medium())) {
+        gn.addView(Ui.row(this, "Back up everything (ZIP)", "Saved to Downloads/ScreenshotSorter", link("Export ›")) {
             Ops.exportZip(this, userFolders(), "ScreenshotSorter-backup")
         })
-        gn.addView(Ui.row(this, "Clear picture history", null, Ui.text(this, "Clear ›", 14f, Theme.accent, Ui.medium())) {
+        gn.addView(Ui.row(this, "Clear picture history", null, link("Clear ›")) {
             History.clear(this)
             Toast.makeText(this, "History cleared", Toast.LENGTH_SHORT).show()
         })
@@ -202,9 +226,9 @@ class SettingsActivity : Activity() {
         rb.addView(
             Ui.row(
                 this, "Open recycle bin", "Deleted pictures are kept ${Trash.DAYS} days. $n item(s) inside now.",
-                Ui.text(this, "Open ›", 14f, Theme.accent, Ui.medium())
+                link("Open ›")
             ) {
-                val i = android.content.Intent(this, FolderActivity::class.java)
+                val i = Intent(this, FolderActivity::class.java)
                 i.putExtra("mode", "trash")
                 startActivity(i)
             }

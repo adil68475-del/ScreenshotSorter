@@ -1,15 +1,9 @@
 package com.sorter.shots
 
-import android.Manifest
 import android.app.Activity
-import android.app.ActivityManager
 import android.content.Intent
-import android.graphics.Color
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Environment
-import android.provider.Settings
 import android.text.Editable
 import android.text.InputType
 import android.text.TextUtils
@@ -21,9 +15,9 @@ import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.TextView
 import android.widget.Toast
 import java.io.File
 
@@ -32,11 +26,11 @@ private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
 class MainActivity : Activity() {
     private lateinit var foldersBox: LinearLayout
-    private lateinit var setupBox: LinearLayout
     private lateinit var pillsRow: LinearLayout
     private lateinit var searchBox: EditText
     private lateinit var backdrop: Backdrop
     private lateinit var scroll: ScrollView
+    private var gate: FrameLayout? = null
     private var scope = "All"
     private var loadedVer = 0
 
@@ -109,23 +103,11 @@ class MainActivity : Activity() {
         pLp.topMargin = dp(8)
         col.addView(pillsRow, pLp)
 
-        val spacer = View(this)
-        col.addView(spacer, LinearLayout.LayoutParams(MATCH, dp(14)))
+        col.addView(View(this), LinearLayout.LayoutParams(MATCH, dp(14)))
 
         foldersBox = LinearLayout(this)
         foldersBox.orientation = LinearLayout.VERTICAL
         col.addView(foldersBox)
-
-        val st = Ui.text(this, "SETUP", 12f, Ui.muted(), Ui.medium())
-        st.letterSpacing = 0.12f
-        st.setPadding(dp(4), dp(26), 0, dp(8))
-        col.addView(st)
-
-        setupBox = LinearLayout(this)
-        setupBox.orientation = LinearLayout.VERTICAL
-        setupBox.setPadding(dp(14), dp(8), dp(14), dp(12))
-        setupBox.background = Ui.glass(this, 20)
-        col.addView(setupBox)
 
         scroll = ScrollView(this)
         scroll.isVerticalScrollBarEnabled = false
@@ -136,10 +118,6 @@ class MainActivity : Activity() {
         Ui.styleWindow(this)
         Ui.fadeIn(scroll)
         col.requestFocus()
-
-        if (Build.VERSION.SDK_INT >= 33) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
-        }
     }
 
     override fun onResume() {
@@ -149,7 +127,12 @@ class MainActivity : Activity() {
             return
         }
         backdrop.start()
-        refreshSetup()
+        // The watcher starts by itself as soon as the permissions are there.
+        if (Perms.core(this)) {
+            Watchdog.schedule(this)
+            Watchdog.ensure(this)
+        }
+        updateGate()
         refreshPills()
         refreshFolders()
     }
@@ -159,11 +142,76 @@ class MainActivity : Activity() {
         if (::backdrop.isInitialized) backdrop.stop()
     }
 
-    @Suppress("DEPRECATION")
-    private fun serviceRunning(): Boolean {
-        val am = getSystemService(ActivityManager::class.java)
-        return am.getRunningServices(100).any { it.service.className == WatcherService::class.java.name }
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        updateGate()
     }
+
+    // ------------------------------------------------------------ mandatory permission pop-up
+
+    private fun updateGate() {
+        val old = gate
+        if (old != null) (old.parent as? ViewGroup)?.removeView(old)
+        gate = null
+
+        val core = Perms.core(this)
+        val allDone = core && Perms.battery(this) && Perms.notif(this)
+        val sp = Prefs.sp(this)
+        if (allDone) sp.edit().putBoolean("gateSeen", true).apply()
+        val seen = sp.getBoolean("gateSeen", false)
+        if (core && (seen || allDone)) return
+
+        val content = findViewById<ViewGroup>(android.R.id.content)
+        val dim = FrameLayout(this)
+        dim.setBackgroundColor(0xDD000000.toInt())
+        dim.isClickable = true
+
+        val c = Ui.panel(this)
+        c.addView(Ui.text(this, "Before we start", 22f, Ui.fg(), Ui.light()))
+        val intro = Ui.text(
+            this,
+            "Allow these once. After that the app runs by itself in the background, all the time. There is nothing to switch on.",
+            13f, Ui.muted()
+        )
+        intro.setPadding(0, dp(6), 0, dp(8))
+        c.addView(intro)
+        c.addView(
+            Ui.row(this, "Display over other apps", "Shows the folder popup on top of your screenshot",
+                Ui.status(this, Perms.overlay(this))) { Perms.openOverlay(this) }
+        )
+        c.addView(
+            Ui.row(this, "All files access", "Lets the app move pictures into your folders",
+                Ui.status(this, Perms.files())) { Perms.openFiles(this) }
+        )
+        c.addView(
+            Ui.row(this, "Keep running in background", "Stops the phone from closing the app (recommended)",
+                Ui.status(this, Perms.battery(this))) { Perms.openBattery(this) }
+        )
+        if (Build.VERSION.SDK_INT >= 33) {
+            c.addView(
+                Ui.row(this, "Notifications", "Shows the small \"running\" icon",
+                    Ui.status(this, Perms.notif(this))) { Perms.askNotif(this) }
+            )
+        }
+        if (core) {
+            c.addView(Ui.button(this, "Continue", true, true) {
+                Prefs.sp(this).edit().putBoolean("gateSeen", true).apply()
+                updateGate()
+            })
+        } else {
+            val hint = Ui.text(this, "Allow the first two to continue.", 12f, Ui.muted())
+            hint.gravity = Gravity.CENTER
+            hint.setPadding(0, dp(10), 0, 0)
+            c.addView(hint, LinearLayout.LayoutParams(MATCH, WRAP))
+        }
+
+        val w = minOf(resources.displayMetrics.widthPixels - dp(40), dp(380))
+        dim.addView(c, FrameLayout.LayoutParams(w, WRAP, Gravity.CENTER))
+        content.addView(dim, FrameLayout.LayoutParams(MATCH, MATCH))
+        gate = dim
+    }
+
+    // ------------------------------------------------------------ navigation
 
     private fun openMode(mode: String) {
         val i = Intent(this, FolderActivity::class.java)
@@ -229,38 +277,6 @@ class MainActivity : Activity() {
         lp2.leftMargin = dp(4)
         pillsRow.addView(h, lp1)
         pillsRow.addView(t, lp2)
-    }
-
-    // ------------------------------------------------------------ setup card
-
-    private fun status(ok: Boolean): TextView =
-        if (ok) Ui.text(this, "✓", 18f, Ui.GREEN, Ui.medium())
-        else Ui.text(this, "Allow ›", 14f, Theme.accent, Ui.medium())
-
-    private fun refreshSetup() {
-        setupBox.removeAllViews()
-        val overlay = Settings.canDrawOverlays(this)
-        val files = Environment.isExternalStorageManager()
-        setupBox.addView(Ui.row(this, "Display over other apps", null, status(overlay)) {
-            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-        })
-        setupBox.addView(Ui.row(this, "All files access", null, status(files)) {
-            startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName")))
-        })
-        val running = serviceRunning()
-        val label = if (running) "Stop watching" else "Start watching"
-        setupBox.addView(Ui.button(this, label, !running, true) {
-            if (running) {
-                stopService(Intent(this, WatcherService::class.java))
-                Prefs.sp(this).edit().putBoolean("watching", false).apply()
-            } else if (overlay && files) {
-                startForegroundService(Intent(this, WatcherService::class.java))
-                Prefs.sp(this).edit().putBoolean("watching", true).apply()
-            } else {
-                Toast.makeText(this, "Allow both permissions first", Toast.LENGTH_SHORT).show()
-            }
-            scroll.postDelayed({ refreshSetup() }, 500)
-        })
     }
 
     // ------------------------------------------------------------ folders
