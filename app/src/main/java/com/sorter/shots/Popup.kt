@@ -3,8 +3,6 @@ package com.sorter.shots
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
-import android.graphics.drawable.GradientDrawable
-import android.media.MediaScannerConnection
 import android.os.Environment
 import android.text.InputType
 import android.text.TextUtils
@@ -29,6 +27,7 @@ private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 class FolderPopup(
     private val ctx: Context,
     private val file: File,
+    private val aiOn: Boolean,
     private val onClosed: () -> Unit
 ) {
     companion object {
@@ -40,21 +39,18 @@ class FolderPopup(
     private val root = FrameLayout(ctx)
     private var shown = false
 
+    // AI state
+    private var analysis: Brain.Analysis? = null
+    private var suggestion: Brain.Suggestion? = null
+    private var aiDone = false
+    private var slot: LinearLayout? = null
+
     private fun dp(v: Int) = Ui.dp(ctx, v)
 
     private fun card(): LinearLayout {
         root.removeAllViews()
-        val c = LinearLayout(ctx)
-        c.orientation = LinearLayout.VERTICAL
-        c.setPadding(dp(16), dp(16), dp(16), dp(14))
-        val bg = GradientDrawable(
-            GradientDrawable.Orientation.TL_BR,
-            intArrayOf(0xCC283050.toInt(), 0xBB171C33.toInt())
-        )
-        bg.cornerRadius = dp(26).toFloat()
-        bg.setStroke(dp(1), 0x40FFFFFF)
-        c.background = bg
-        c.isClickable = true
+        slot = null
+        val c = Ui.panel(ctx)
         val w = minOf(dm.widthPixels - dp(40), dp(360))
         root.addView(c, FrameLayout.LayoutParams(w, WRAP, Gravity.CENTER))
         c.alpha = 0f
@@ -67,6 +63,7 @@ class FolderPopup(
     }
 
     fun show() {
+        Theme.load(ctx)
         val p = WindowManager.LayoutParams(
             MATCH, MATCH,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
@@ -84,6 +81,36 @@ class FolderPopup(
         root.animate().alpha(1f).setDuration(180).start()
     }
 
+    // Called by the service when the on-device AI has looked at the picture.
+    fun setAnalysis(a: Brain.Analysis?, s: Brain.Suggestion?) {
+        analysis = a
+        suggestion = s
+        aiDone = true
+        if (shown) fillSlot()
+    }
+
+    private fun fillSlot() {
+        val s = slot ?: return
+        s.removeAllViews()
+        if (!aiDone) {
+            val t = Ui.text(ctx, "✨  Looking at your screenshot…", 13f, Ui.muted())
+            t.setPadding(dp(4), dp(12), 0, dp(2))
+            t.alpha = 0.4f
+            t.animate().alpha(1f).setDuration(700).start()
+            s.addView(t)
+            return
+        }
+        val sg = suggestion ?: return
+        val label = if (sg.isNew) "✨  Create \"${sg.name}\" and save" else "✨  Save to ${sg.name}"
+        val b = Ui.button(ctx, label, true, true) { moveTo(File(BASE, sg.name)) }
+        (b.layoutParams as LinearLayout.LayoutParams).topMargin = dp(12)
+        s.addView(b)
+        val why = Ui.text(ctx, sg.reason, 11f, Ui.muted())
+        why.gravity = Gravity.CENTER
+        why.setPadding(0, dp(4), 0, 0)
+        s.addView(why, LinearLayout.LayoutParams(MATCH, WRAP))
+    }
+
     private fun showList() {
         val c = card()
 
@@ -98,8 +125,8 @@ class FolderPopup(
         val col = LinearLayout(ctx)
         col.orientation = LinearLayout.VERTICAL
         col.setPadding(dp(12), 0, 0, 0)
-        col.addView(Ui.text(ctx, "Save to…", 18f, Color.WHITE, Ui.medium()))
-        val name = Ui.text(ctx, file.name, 12f, Ui.MUTED)
+        col.addView(Ui.text(ctx, "Save to…", 18f, Ui.fg(), Ui.medium()))
+        val name = Ui.text(ctx, file.name, 12f, Ui.muted())
         name.maxLines = 1
         name.ellipsize = TextUtils.TruncateAt.MIDDLE
         col.addView(name)
@@ -107,12 +134,20 @@ class FolderPopup(
         c.addView(head)
         Thumbs.load(file, dp(104), iv)
 
-        BASE.mkdirs()
-        val folders = BASE.listFiles()?.filter { it.isDirectory }?.sortedBy { it.name.lowercase() } ?: emptyList()
+        if (aiOn) {
+            val sl = LinearLayout(ctx)
+            sl.orientation = LinearLayout.VERTICAL
+            c.addView(sl, LinearLayout.LayoutParams(MATCH, WRAP))
+            slot = sl
+            fillSlot()
+        }
+
+        FolderPopup.BASE.mkdirs()
+        val folders = userFolders().sortedBy { it.name.lowercase() }
         val usage = ctx.getSharedPreferences("usage", Context.MODE_PRIVATE)
         val quick = folders.filter { usage.getInt(it.name, 0) > 0 }.maxByOrNull { usage.getInt(it.name, 0) }
         if (quick != null) {
-            val qb = Ui.button(ctx, "⚡  Quick save to ${quick.name}", true, true) { moveTo(quick) }
+            val qb = Ui.button(ctx, "⚡  Quick save to ${quick.name}", !aiOn, true) { moveTo(quick) }
             (qb.layoutParams as LinearLayout.LayoutParams).topMargin = dp(12)
             c.addView(qb)
         }
@@ -120,7 +155,7 @@ class FolderPopup(
         val list = LinearLayout(ctx)
         list.orientation = LinearLayout.VERTICAL
         if (folders.isEmpty()) {
-            val e = Ui.text(ctx, "No folders yet. Create your first one.", 14f, Ui.MUTED)
+            val e = Ui.text(ctx, "No folders yet. Create your first one.", 14f, Ui.muted())
             e.setPadding(0, dp(14), 0, dp(8))
             list.addView(e)
         }
@@ -128,7 +163,7 @@ class FolderPopup(
             list.addView(Ui.button(ctx, "📁   ${f.name}", false, false) { moveTo(f) })
         }
 
-        val maxH = (dm.heightPixels * 0.38).toInt()
+        val maxH = (dm.heightPixels * 0.34).toInt()
         val sv = object : ScrollView(ctx) {
             override fun onMeasure(w: Int, h: Int) {
                 super.onMeasure(w, View.MeasureSpec.makeMeasureSpec(maxH, View.MeasureSpec.AT_MOST))
@@ -142,7 +177,7 @@ class FolderPopup(
 
         val actions = LinearLayout(ctx)
         actions.orientation = LinearLayout.HORIZONTAL
-        val newBtn = Ui.button(ctx, "+  New folder", quick == null, true) { showNew() }
+        val newBtn = Ui.button(ctx, "+  New folder", false, true) { showNew() }
         val skip = Ui.button(ctx, "Skip", false, true) { dismiss() }
         newBtn.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1.6f)
         val skipLp = LinearLayout.LayoutParams(0, WRAP, 1f)
@@ -157,11 +192,11 @@ class FolderPopup(
 
     private fun showNew() {
         val c = card()
-        c.addView(Ui.text(ctx, "New folder", 18f, Color.WHITE, Ui.medium()))
+        c.addView(Ui.text(ctx, "New folder", 18f, Ui.fg(), Ui.medium()))
 
         val et = EditText(ctx)
-        et.setTextColor(Color.WHITE)
-        et.setHintTextColor(0x99FFFFFF.toInt())
+        et.setTextColor(Ui.fg())
+        et.setHintTextColor(Ui.muted())
         et.hint = "Folder name"
         et.textSize = 16f
         et.typeface = Ui.medium()
@@ -169,6 +204,11 @@ class FolderPopup(
         et.setPadding(dp(16), dp(13), dp(16), dp(13))
         et.setSingleLine()
         et.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+        val s = suggestion
+        if (s != null && s.isNew) {
+            et.setText(s.name)
+            et.setSelection(et.text.length)
+        }
         val etLp = LinearLayout.LayoutParams(MATCH, WRAP)
         etLp.topMargin = dp(12)
         c.addView(et, etLp)
@@ -177,11 +217,9 @@ class FolderPopup(
         actions.orientation = LinearLayout.HORIZONTAL
         val back = Ui.button(ctx, "Back", false, true) { showList() }
         val create = Ui.button(ctx, "Create & save", true, true) {
-            val n = et.text.toString().trim().replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            val n = Ops.cleanName(et.text.toString())
             if (n.isNotEmpty()) {
-                val dir = File(BASE, n)
-                dir.mkdirs()
-                moveTo(dir)
+                moveTo(File(BASE, n))
             }
         }
         back.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
@@ -206,27 +244,26 @@ class FolderPopup(
         c.gravity = Gravity.CENTER_HORIZONTAL
         c.setPadding(dp(16), dp(24), dp(16), dp(22))
         c.addView(Ui.text(ctx, "✓", 40f, Ui.GREEN, Ui.light()))
-        c.addView(Ui.text(ctx, "Saved to $folderName", 16f, Color.WHITE, Ui.medium()))
+        c.addView(Ui.text(ctx, "Saved to $folderName", 16f, Ui.fg(), Ui.medium()))
         root.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
         root.postDelayed({ dismiss() }, 700)
     }
 
     private fun moveTo(dir: File) {
-        try {
-            var target = File(dir, file.name)
-            if (target.exists()) target = File(dir, "${System.currentTimeMillis()}_${file.name}")
-            if (!file.renameTo(target)) {
-                file.copyTo(target)
-                file.delete()
-            }
-            MediaScannerConnection.scanFile(ctx, arrayOf(file.path, target.path), null, null)
-            val usage = ctx.getSharedPreferences("usage", Context.MODE_PRIVATE)
-            usage.edit().putInt(dir.name, usage.getInt(dir.name, 0) + 1).apply()
-            showDone(dir.name)
-        } catch (e: Exception) {
-            Toast.makeText(ctx, "Couldn't move: ${e.message}", Toast.LENGTH_LONG).show()
+        val target = Ops.moveFile(ctx, file, dir)
+        if (target == null) {
             dismiss()
+            return
         }
+        val usage = ctx.getSharedPreferences("usage", Context.MODE_PRIVATE)
+        usage.edit().putInt(dir.name, usage.getInt(dir.name, 0) + 1).apply()
+        History.add(ctx, target.path)
+        val a = analysis
+        if (aiOn && a != null) {
+            Brain.learn(ctx, dir.name, a.features)
+            Brain.index(ctx, target.name, a)
+        }
+        showDone(dir.name)
     }
 
     fun dismiss() {

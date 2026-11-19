@@ -4,11 +4,14 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.ContentResolver
+import android.content.Context
 import android.content.Intent
 import android.database.ContentObserver
 import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -48,6 +51,10 @@ class WatcherService : Service() {
             .build()
         startForeground(1, n)
         for (u in uris) contentResolver.registerContentObserver(u, true, observer)
+        try {
+            Trash.purgeOld(this)
+        } catch (_: Exception) {
+        }
     }
 
     override fun onDestroy() {
@@ -108,7 +115,30 @@ class WatcherService : Service() {
 
     private fun show(f: File) {
         if (popup != null || !Settings.canDrawOverlays(this)) return
-        popup = FolderPopup(this, f) { popup = null }
-        popup?.show()
+        val ai = Brain.enabled(this) && !f.isVideoFile()
+        val p = FolderPopup(this, f, ai) { popup = null }
+        popup = p
+        p.show()
+        if (ai) {
+            Brain.analyze(f) { a ->
+                val names = userFolders().map { it.name }
+                val s = if (a != null) Brain.suggest(this, a, names) else null
+                p.setAnalysis(a, s)
+            }
+        }
+    }
+}
+
+// Starts the watcher again after the phone restarts (if you had it on).
+class BootReceiver : BroadcastReceiver() {
+    override fun onReceive(ctx: Context, intent: Intent) {
+        if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
+        val sp = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
+        if (!sp.getBoolean("autostart", true) || !sp.getBoolean("watching", false)) return
+        if (!Settings.canDrawOverlays(ctx) || !Environment.isExternalStorageManager()) return
+        try {
+            ctx.startForegroundService(Intent(ctx, WatcherService::class.java))
+        } catch (_: Exception) {
+        }
     }
 }
