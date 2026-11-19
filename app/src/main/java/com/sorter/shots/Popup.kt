@@ -107,10 +107,18 @@ class FolderPopup(
         c.addView(head)
         Thumbs.load(file, dp(104), iv)
 
-        val list = LinearLayout(ctx)
-        list.orientation = LinearLayout.VERTICAL
         BASE.mkdirs()
         val folders = BASE.listFiles()?.filter { it.isDirectory }?.sortedBy { it.name.lowercase() } ?: emptyList()
+        val usage = ctx.getSharedPreferences("usage", Context.MODE_PRIVATE)
+        val quick = folders.filter { usage.getInt(it.name, 0) > 0 }.maxByOrNull { usage.getInt(it.name, 0) }
+        if (quick != null) {
+            val qb = Ui.button(ctx, "⚡  Quick save to ${quick.name}", true, true) { moveTo(quick) }
+            (qb.layoutParams as LinearLayout.LayoutParams).topMargin = dp(12)
+            c.addView(qb)
+        }
+
+        val list = LinearLayout(ctx)
+        list.orientation = LinearLayout.VERTICAL
         if (folders.isEmpty()) {
             val e = Ui.text(ctx, "No folders yet. Create your first one.", 14f, Ui.MUTED)
             e.setPadding(0, dp(14), 0, dp(8))
@@ -134,7 +142,7 @@ class FolderPopup(
 
         val actions = LinearLayout(ctx)
         actions.orientation = LinearLayout.HORIZONTAL
-        val newBtn = Ui.button(ctx, "+  New folder", true, true) { showNew() }
+        val newBtn = Ui.button(ctx, "+  New folder", quick == null, true) { showNew() }
         val skip = Ui.button(ctx, "Skip", false, true) { dismiss() }
         newBtn.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1.6f)
         val skipLp = LinearLayout.LayoutParams(0, WRAP, 1f)
@@ -212,6 +220,8 @@ class FolderPopup(
                 file.delete()
             }
             MediaScannerConnection.scanFile(ctx, arrayOf(file.path, target.path), null, null)
+            val usage = ctx.getSharedPreferences("usage", Context.MODE_PRIVATE)
+            usage.edit().putInt(dir.name, usage.getInt(dir.name, 0) + 1).apply()
             showDone(dir.name)
         } catch (e: Exception) {
             Toast.makeText(ctx, "Couldn't move: ${e.message}", Toast.LENGTH_LONG).show()

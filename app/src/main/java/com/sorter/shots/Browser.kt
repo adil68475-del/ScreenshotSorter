@@ -5,6 +5,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.media.ThumbnailUtils
@@ -17,6 +18,7 @@ import android.util.Size
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.ViewGroup
 import android.widget.AbsListView
@@ -80,6 +82,51 @@ object Thumbs {
             }
         }
     }
+}
+
+// Move / Share / Delete menu for one picture. onChanged runs after a move or delete.
+fun fileActions(act: Activity, f: File, onChanged: () -> Unit) {
+    Sheet.show(
+        act, "Picture", f.name,
+        listOf(
+            Sheet.Item("Move to…", 0) { movePicker(act, f, onChanged) },
+            Sheet.Item("Share", 0) { Ops.share(act, f) },
+            Sheet.Item("Delete", 2) {
+                Sheet.show(
+                    act, "Delete this file?", "This can't be undone.",
+                    listOf(Sheet.Item("Delete", 2) {
+                        Ops.deleteFile(act, f)
+                        onChanged()
+                    })
+                )
+            }
+        )
+    )
+}
+
+private fun movePicker(act: Activity, f: File, onChanged: () -> Unit) {
+    val here = f.parentFile
+    val others = FolderPopup.BASE.listFiles()
+        ?.filter { it.isDirectory && it != here }
+        ?.sortedBy { it.name.lowercase() }
+        ?: emptyList()
+    val items = ArrayList<Sheet.Item>()
+    for (d in others) {
+        items.add(Sheet.Item("📁   ${d.name}", 0) {
+            Ops.moveFile(act, f, d)
+            onChanged()
+        })
+    }
+    items.add(Sheet.Item("+  New folder…", 1) {
+        Sheet.input(act, "New folder", "", "Create & move") { raw ->
+            val n = Ops.cleanName(raw)
+            if (n.isNotEmpty()) {
+                Ops.moveFile(act, f, File(FolderPopup.BASE, n))
+                onChanged()
+            }
+        }
+    })
+    Sheet.show(act, "Move to", null, items)
 }
 
 class FolderActivity : Activity() {
@@ -166,6 +213,10 @@ class FolderActivity : Activity() {
             i.putExtra("index", pos)
             startActivity(i)
         }
+        grid.setOnItemLongClickListener { _, _, pos, _ ->
+            if (pos in files.indices) fileActions(this, files[pos]) { reload() }
+            true
+        }
         col.addView(grid, LinearLayout.LayoutParams(MATCH, 0, 1f))
 
         backdrop = Backdrop(this, col)
@@ -173,12 +224,16 @@ class FolderActivity : Activity() {
         Ui.fadeIn(col)
     }
 
-    override fun onResume() {
-        super.onResume()
-        backdrop.start()
+    private fun reload() {
         files = listMedia(dir)
         countView.text = "${files.size}"
         adapter.notifyDataSetChanged()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        backdrop.start()
+        reload()
     }
 
     override fun onPause() {
@@ -196,6 +251,17 @@ class ViewerActivity : Activity() {
     private lateinit var counter: TextView
     private lateinit var bar: View
     private lateinit var gd: GestureDetector
+    private lateinit var scaleDetector: ScaleGestureDetector
+
+    // zoom state
+    private var currentBitmap: Bitmap? = null
+    private val m = Matrix()
+    private val vals = FloatArray(9)
+    private var minScale = 1f
+    private var lastX = 0f
+    private var lastY = 0f
+    private var panReady = false
+    private var multiTouch = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -212,7 +278,7 @@ class ViewerActivity : Activity() {
         root.setBackgroundColor(Color.BLACK)
 
         image = ImageView(this)
-        image.scaleType = ImageView.ScaleType.FIT_CENTER
+        image.scaleType = ImageView.ScaleType.MATRIX
         root.addView(image, FrameLayout.LayoutParams(MATCH, MATCH))
 
         video = VideoView(this)
@@ -230,6 +296,9 @@ class ViewerActivity : Activity() {
         val next = Ui.text(this, "›", 32f, Color.WHITE, Ui.light())
         next.setPadding(Ui.dp(this, 18), Ui.dp(this, 2), Ui.dp(this, 18), Ui.dp(this, 6))
         next.setOnClickListener { go(1) }
+        val more = Ui.text(this, "⋯", 26f, Color.WHITE, Ui.medium())
+        more.setPadding(Ui.dp(this, 16), Ui.dp(this, 2), Ui.dp(this, 18), Ui.dp(this, 6))
+        more.setOnClickListener { openActions() }
         counter = Ui.text(this, "", 13f, Color.WHITE, Ui.medium())
         counter.gravity = Gravity.CENTER
         counter.maxLines = 2
@@ -237,14 +306,31 @@ class ViewerActivity : Activity() {
         barLayout.addView(prev)
         barLayout.addView(counter, LinearLayout.LayoutParams(0, WRAP, 1f))
         barLayout.addView(next)
+        barLayout.addView(more)
         bar = barLayout
         val barLp = FrameLayout.LayoutParams(MATCH, WRAP, Gravity.TOP)
-        val m = Ui.dp(this, 12)
-        barLp.setMargins(m, m, m, 0)
+        val mg = Ui.dp(this, 12)
+        barLp.setMargins(mg, mg, mg, 0)
         root.addView(barLayout, barLp)
+
+        scaleDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScale(d: ScaleGestureDetector): Boolean {
+                if (currentBitmap == null) return false
+                val cur = curScale()
+                val target = (cur * d.scaleFactor).coerceIn(minScale, minScale * 6f)
+                val f = target / cur
+                val loc = IntArray(2)
+                image.getLocationInWindow(loc)
+                m.postScale(f, f, d.focusX - loc[0], d.focusY - loc[1])
+                fixBounds()
+                image.imageMatrix = m
+                return true
+            }
+        })
 
         gd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
+                if (multiTouch || isZoomed()) return false
                 if (Math.abs(velocityX) > 800 && Math.abs(velocityX) > Math.abs(velocityY)) {
                     go(if (velocityX < 0) 1 else -1)
                     return true
@@ -256,6 +342,24 @@ class ViewerActivity : Activity() {
                 toggleBar()
                 return true
             }
+
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                if (image.visibility != View.VISIBLE || currentBitmap == null) return false
+                if (curScale() > minScale * 1.1f) {
+                    fitImage()
+                } else {
+                    val loc = IntArray(2)
+                    image.getLocationInWindow(loc)
+                    m.postScale(2.5f, 2.5f, e.x - loc[0], e.y - loc[1])
+                    fixBounds()
+                    image.imageMatrix = m
+                }
+                return true
+            }
+
+            override fun onLongPress(e: MotionEvent) {
+                if (!scaleDetector.isInProgress && !multiTouch) openActions()
+            }
         })
 
         setContentView(root)
@@ -263,13 +367,97 @@ class ViewerActivity : Activity() {
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        if (::gd.isInitialized) gd.onTouchEvent(ev)
+        if (::gd.isInitialized && ::scaleDetector.isInitialized) {
+            val imageMode = image.visibility == View.VISIBLE
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    multiTouch = false
+                    panReady = true
+                }
+                MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP -> {
+                    multiTouch = true
+                    panReady = false
+                }
+            }
+            if (ev.pointerCount > 1) multiTouch = true
+            if (imageMode) scaleDetector.onTouchEvent(ev)
+            gd.onTouchEvent(ev)
+            if (imageMode && ev.actionMasked == MotionEvent.ACTION_MOVE &&
+                ev.pointerCount == 1 && isZoomed() && !scaleDetector.isInProgress
+            ) {
+                if (panReady) {
+                    m.postTranslate(ev.x - lastX, ev.y - lastY)
+                    fixBounds()
+                    image.imageMatrix = m
+                } else {
+                    panReady = true
+                }
+            }
+            lastX = ev.x
+            lastY = ev.y
+        }
         return super.dispatchTouchEvent(ev)
     }
 
     override fun onPause() {
         super.onPause()
         if (::video.isInitialized) video.stopPlayback()
+    }
+
+    private fun curScale(): Float {
+        m.getValues(vals)
+        return vals[Matrix.MSCALE_X]
+    }
+
+    private fun isZoomed(): Boolean =
+        image.visibility == View.VISIBLE && currentBitmap != null && curScale() > minScale * 1.02f
+
+    private fun fitImage() {
+        val bmp = currentBitmap ?: return
+        val vw = image.width.toFloat()
+        val vh = image.height.toFloat()
+        if (vw == 0f || vh == 0f) {
+            image.post { fitImage() }
+            return
+        }
+        val s = minOf(vw / bmp.width, vh / bmp.height)
+        m.reset()
+        m.postScale(s, s)
+        m.postTranslate((vw - bmp.width * s) / 2f, (vh - bmp.height * s) / 2f)
+        minScale = s
+        image.imageMatrix = m
+    }
+
+    private fun fixBounds() {
+        val bmp = currentBitmap ?: return
+        m.getValues(vals)
+        val s = vals[Matrix.MSCALE_X]
+        val tx = vals[Matrix.MTRANS_X]
+        val ty = vals[Matrix.MTRANS_Y]
+        val cw = bmp.width * s
+        val ch = bmp.height * s
+        val vw = image.width.toFloat()
+        val vh = image.height.toFloat()
+        val nx = if (cw <= vw) (vw - cw) / 2f else tx.coerceIn(vw - cw, 0f)
+        val ny = if (ch <= vh) (vh - ch) / 2f else ty.coerceIn(vh - ch, 0f)
+        m.postTranslate(nx - tx, ny - ty)
+    }
+
+    private fun openActions() {
+        if (idx !in files.indices) return
+        fileActions(this, files[idx]) { removeCurrent() }
+    }
+
+    private fun removeCurrent() {
+        val list = files.toMutableList()
+        if (idx in list.indices) list.removeAt(idx)
+        files = list
+        if (files.isEmpty()) {
+            finish()
+            return
+        }
+        if (idx >= files.size) idx = files.size - 1
+        showCurrent()
     }
 
     private fun toggleBar() {
@@ -294,6 +482,7 @@ class ViewerActivity : Activity() {
         val f = files[idx]
         counter.text = "${idx + 1} / ${files.size}\n${f.name}"
         if (f.isVideoFile()) {
+            currentBitmap = null
             image.visibility = View.GONE
             video.visibility = View.VISIBLE
             video.setVideoPath(f.path)
@@ -303,11 +492,14 @@ class ViewerActivity : Activity() {
             video.visibility = View.GONE
             image.visibility = View.VISIBLE
             image.setImageDrawable(null)
+            currentBitmap = null
             Thread {
                 val bmp = decode(f)
                 runOnUiThread {
-                    if (files.getOrNull(idx) == f) {
+                    if (files.getOrNull(idx) == f && bmp != null) {
+                        currentBitmap = bmp
                         image.setImageBitmap(bmp)
+                        fitImage()
                         image.alpha = 0f
                         image.animate().alpha(1f).setDuration(220).start()
                     }

@@ -19,6 +19,7 @@ import android.view.animation.DecelerateInterpolator
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Toast
+import java.io.File
 
 private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
@@ -133,6 +134,38 @@ class MainActivity : Activity() {
         })
     }
 
+    private fun folderActions(d: File) {
+        val n = listMedia(d).size
+        Sheet.show(this, d.name, "$n item(s)", listOf(
+            Sheet.Item("Rename", 0) {
+                Sheet.input(this, "Rename folder", d.name, "Rename") { raw ->
+                    val nn = Ops.cleanName(raw)
+                    if (nn.isNotEmpty() && nn != d.name) {
+                        if (Ops.renameDir(this, d, nn)) {
+                            val sp = getSharedPreferences("usage", MODE_PRIVATE)
+                            val cnt = sp.getInt(d.name, 0)
+                            sp.edit().remove(d.name).putInt(nn, cnt).apply()
+                        } else {
+                            Toast.makeText(this, "Couldn't rename (name taken?)", Toast.LENGTH_SHORT).show()
+                        }
+                        refreshFolders()
+                    }
+                }
+            },
+            Sheet.Item("Delete folder", 2) {
+                Sheet.show(
+                    this, "Delete \"${d.name}\"?",
+                    "$n item(s) inside will be deleted. This can't be undone.",
+                    listOf(Sheet.Item("Delete", 2) {
+                        Ops.deleteDir(this, d)
+                        getSharedPreferences("usage", MODE_PRIVATE).edit().remove(d.name).apply()
+                        refreshFolders()
+                    })
+                )
+            }
+        ))
+    }
+
     private fun refreshFolders() {
         foldersBox.removeAllViews()
         val dirs = FolderPopup.BASE.listFiles()
@@ -163,6 +196,10 @@ class MainActivity : Activity() {
                 val intent = Intent(this, FolderActivity::class.java)
                 intent.putExtra("dir", d.path)
                 startActivity(intent)
+            }
+            row.setOnLongClickListener {
+                folderActions(d)
+                true
             }
             val lp = LinearLayout.LayoutParams(MATCH, WRAP)
             lp.bottomMargin = dp(10)
