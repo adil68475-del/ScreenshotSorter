@@ -212,8 +212,8 @@ class SettingsActivity : Activity() {
 
         // ---- general
         val gn = section("GENERAL")
-        gn.addView(Ui.row(this, "Back up everything (ZIP)", "Saved to Downloads/ScreenshotSorter", link("Export ›")) {
-            Ops.exportZip(this, userFolders(), "ScreenshotSorter-backup")
+        gn.addView(Ui.row(this, "Back up everything (ZIP)", "Saved to Downloads/ScreenshotSaver", link("Export ›")) {
+            Ops.exportZip(this, userFolders(), "ScreenshotSaver-backup")
         })
         gn.addView(Ui.row(this, "Clear picture history", null, link("Clear ›")) {
             History.clear(this)

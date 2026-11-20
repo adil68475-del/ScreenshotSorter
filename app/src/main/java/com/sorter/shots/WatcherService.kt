@@ -47,7 +47,7 @@ class WatcherService : Service() {
 
     private fun notification(): Notification =
         Notification.Builder(this, "watch")
-            .setContentTitle("Screenshot Sorter is running")
+            .setContentTitle("Screenshot Saver is running")
             .setContentText("Ready to sort your next screenshot")
             .setSmallIcon(android.R.drawable.ic_menu_gallery)
             .setOngoing(true)
@@ -68,6 +68,7 @@ class WatcherService : Service() {
         for (u in uris) contentResolver.registerContentObserver(u, true, observer)
         Watchdog.schedule(this)
         heartbeat.run()
+        handler.postDelayed({ check() }, 1500)
         try {
             Trash.purgeOld(this)
         } catch (_: Exception) {

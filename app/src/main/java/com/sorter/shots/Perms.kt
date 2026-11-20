@@ -15,6 +15,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.os.PowerManager
+import android.provider.MediaStore
 import android.provider.Settings
 
 object Perms {
@@ -107,6 +108,37 @@ object Watchdog {
 
     // Repeating check (every ~15 min). Survives app kills and reboots.
     fun schedule(ctx: Context) {
+        schedulePeriodic(ctx)
+        scheduleTrigger(ctx)
+    }
+
+    // Wakes the app the moment any new picture/video is saved (works even if the service was killed).
+    fun scheduleTrigger(ctx: Context) {
+        try {
+            val js = ctx.getSystemService(JobScheduler::class.java)
+            if (js.getPendingJob(3) == null) {
+                val b = JobInfo.Builder(3, ComponentName(ctx, WatchdogJob::class.java))
+                b.addTriggerContentUri(
+                    JobInfo.TriggerContentUri(
+                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                        JobInfo.TriggerContentUri.FLAG_NOTIFY_FOR_DESCENDANTS
+                    )
+                )
+                b.addTriggerContentUri(
+                    JobInfo.TriggerContentUri(
+                        MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                        JobInfo.TriggerContentUri.FLAG_NOTIFY_FOR_DESCENDANTS
+                    )
+                )
+                b.setTriggerContentUpdateDelay(300L)
+                b.setTriggerContentMaxDelay(1500L)
+                js.schedule(b.build())
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun schedulePeriodic(ctx: Context) {
         try {
             val js = ctx.getSystemService(JobScheduler::class.java)
             if (js.getPendingJob(1) == null) {
@@ -137,6 +169,7 @@ object Watchdog {
 class WatchdogJob : JobService() {
     override fun onStartJob(params: JobParameters?): Boolean {
         Watchdog.ensure(this)
+        Watchdog.scheduleTrigger(this) // content triggers are one-shot, so arm it again
         return false
     }
 
@@ -149,9 +182,11 @@ fun protectSheet(act: Activity) {
         val t = Ui.text(
             act,
             "Cleaner and \"boost\" buttons can force-stop apps. After a force-stop Android blocks everything until the app is opened again, so no app can restart itself. The fix is to tell your phone to leave this app alone:\n\n" +
-                "1. Open Recent apps and lock Screenshot Sorter (tap its lock icon, or pull its card down).\n\n" +
-                "2. Open your phone's cleaner (Phone Master on Tecno, Infinix and itel), go to its settings and add Screenshot Sorter to the Whitelist / Protected apps list. The wording differs a little between phones.\n\n" +
-                "3. Allow Auto-start for the app, and set its battery use to Unrestricted.",
+                "1. Open Recent apps and lock Screenshot Saver (tap its lock icon, or pull its card down).\n\n" +
+                "2. Open your phone's cleaner (Phone Master on Tecno, Infinix and itel), go to its settings and add Screenshot Saver to the Whitelist / Protected apps list. The wording differs a little between phones.\n\n" +
+                "3. Allow Auto-start for the app, and set its battery use to Unrestricted.\n\n" +
+                "4. Add the Screenshot Saver tile: swipe down, tap the pencil, drag the tile up. Opening your quick panel then wakes the app even after a cleaner stopped it.\n\n" +
+                "5. You can also share any screenshot to Screenshot Saver from the Share menu. That wakes the app too.",
             13f, Ui.muted()
         )
         t.setPadding(Ui.dp(act, 4), Ui.dp(act, 10), Ui.dp(act, 4), Ui.dp(act, 8))

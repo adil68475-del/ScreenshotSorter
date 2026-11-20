@@ -628,7 +628,7 @@ object Ops {
         act.startActivity(Intent.createChooser(i, "Share"))
     }
 
-    // ZIP into Downloads/ScreenshotSorter
+    // ZIP into Downloads/ScreenshotSaver
     fun exportZip(act: Activity, dirs: List<File>, label: String) {
         Toast.makeText(act, "Exporting…", Toast.LENGTH_SHORT).show()
         Thread {
@@ -637,7 +637,7 @@ object Ops {
             try {
                 val outDir = File(
                     Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                    "ScreenshotSorter"
+                    "ScreenshotSaver"
                 )
                 outDir.mkdirs()
                 val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
@@ -661,7 +661,7 @@ object Ops {
             act.runOnUiThread {
                 if (r != null) {
                     scan(act, listOf(r.path))
-                    Toast.makeText(act, "Saved to Downloads/ScreenshotSorter/${r.name}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(act, "Saved to Downloads/ScreenshotSaver/${r.name}", Toast.LENGTH_LONG).show()
                 } else {
                     Toast.makeText(act, "Export failed: $e", Toast.LENGTH_LONG).show()
                 }

@@ -177,7 +177,7 @@ class MainActivity : Activity() {
         card.addView(Ui.text(this, "⚠  Your phone stopped the watcher", 16f, Ui.fg(), Ui.medium()))
         val msg = Ui.text(
             this,
-            "A cleaner or battery saver closed Screenshot Sorter (last active ${fmtDate(beat)}). It is running again now. Protect it so this doesn't happen again.",
+            "A cleaner or battery saver closed Screenshot Saver (last active ${fmtDate(beat)}). It is running again now. Protect it so this doesn't happen again.",
             13f, Ui.muted()
         )
         msg.setPadding(0, dp(4), 0, dp(6))
@@ -208,7 +208,7 @@ class MainActivity : Activity() {
         if (old != null) (old.parent as? ViewGroup)?.removeView(old)
         gate = null
 
-        val core = Perms.core(this)
+        val core = Perms.core(this) && Perms.battery(this)
         val allDone = core && Perms.battery(this) && Perms.notif(this)
         val sp = Prefs.sp(this)
         if (allDone) sp.edit().putBoolean("gateSeen", true).apply()
@@ -238,7 +238,7 @@ class MainActivity : Activity() {
                 Ui.status(this, Perms.files())) { Perms.openFiles(this) }
         )
         c.addView(
-            Ui.row(this, "Keep running in background", "Stops the phone from closing the app (recommended)",
+            Ui.row(this, "Keep running in background", "Required: stops the phone from closing the app",
                 Ui.status(this, Perms.battery(this))) { Perms.openBattery(this) }
         )
         if (Build.VERSION.SDK_INT >= 33) {
@@ -249,7 +249,7 @@ class MainActivity : Activity() {
         }
         val tip = Ui.text(
             this,
-            "Tip: if your phone has a cleaner or booster app, add Screenshot Sorter to its whitelist. See Settings → Protect from phone cleaners.",
+            "Tip: if your phone has a cleaner or booster app, add Screenshot Saver to its whitelist. See Settings → Protect from phone cleaners.",
             12f, Ui.muted()
         )
         tip.setPadding(dp(4), dp(8), dp(4), dp(2))
@@ -260,7 +260,7 @@ class MainActivity : Activity() {
                 updateGate()
             })
         } else {
-            val hint = Ui.text(this, "Allow the first two to continue.", 12f, Ui.muted())
+            val hint = Ui.text(this, "Allow the first three to continue.", 12f, Ui.muted())
             hint.gravity = Gravity.CENTER
             hint.setPadding(0, dp(10), 0, 0)
             c.addView(hint, LinearLayout.LayoutParams(MATCH, WRAP))
