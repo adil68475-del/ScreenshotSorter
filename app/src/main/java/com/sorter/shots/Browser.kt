@@ -55,6 +55,7 @@ fun searchFiles(ctx: Context, q: String, scope: String): List<File> {
     val idx = ctx.getSharedPreferences("index", Context.MODE_PRIVATE)
     val out = ArrayList<File>()
     for (d in userFolders()) {
+        if (Locks.isLocked(ctx, d.name)) continue
         val folderHit = d.name.lowercase().contains(ql)
         for (f in listMedia(d)) {
             val nameHit = f.name.lowercase().contains(ql) ||
@@ -77,7 +78,9 @@ fun loadFiles(ctx: Context, mode: String, dirPath: String, query: String, scope:
     val desc = sp.getBoolean("descPics", true)
     return when (mode) {
         "trash" -> Trash.entries(ctx)
-        "history" -> History.list(ctx).map { File(it) }.filter { it.isFile }
+        "history" -> History.list(ctx).map { File(it) }.filter {
+            it.isFile && !Locks.isLocked(ctx, it.parentFile?.name ?: "")
+        }
         "search" -> Sorter.sortPics(searchFiles(ctx, query, scope), key, desc)
         else -> Sorter.sortPics(listMedia(File(dirPath)), key, desc)
     }
@@ -87,6 +90,10 @@ object Thumbs {
     private val cache = LruCache<String, Bitmap>(150)
     private val pool = Executors.newFixedThreadPool(3)
     private val main = Handler(Looper.getMainLooper())
+
+    fun invalidate(path: String) {
+        cache.remove(path)
+    }
 
     fun load(f: File, size: Int, target: ImageView) {
         val key = f.path
@@ -126,7 +133,12 @@ object Thumbs {
 fun fileActions(act: Activity, f: File, onChanged: () -> Unit) {
     Sheet.show(
         act, "Picture", f.name,
-        listOf(
+        listOfNotNull(
+            if (f.isVideoFile()) null else Sheet.Item("Edit", 0) {
+                val i = Intent(act, EditActivity::class.java)
+                i.putExtra("path", f.path)
+                act.startActivity(i)
+            },
             Sheet.Item("Move to…", 0) { movePicker(act, listOf(f), onChanged) },
             Sheet.Item("Share", 0) { Ops.share(act, f) },
             Sheet.Item("Delete", 2) {
@@ -738,6 +750,15 @@ class ViewerActivity : Activity() {
             lastY = ev.y
         }
         return super.dispatchTouchEvent(ev)
+    }
+
+    private var resumedOnce = false
+
+    override fun onResume() {
+        super.onResume()
+        // Coming back from the editor: show the updated picture.
+        if (resumedOnce && ::image.isInitialized && idx in files.indices) showCurrent()
+        resumedOnce = true
     }
 
     override fun onPause() {

@@ -204,16 +204,47 @@ class SettingsActivity : Activity() {
             }
         )
         if (aiOn) {
+            val autoOn = sp.getBoolean("autoSave", false)
+            ai.addView(
+                Ui.row(
+                    this, "Auto-save when very sure",
+                    "If the AI has seen this kind of picture in a folder many times, it saves it there without asking and shows an Undo button.",
+                    Ui.onOffPill(this, autoOn)
+                ) {
+                    sp.edit().putBoolean("autoSave", !autoOn).apply()
+                    render()
+                }
+            )
             ai.addView(Ui.row(this, "Forget what the AI learned", null, link("Reset ›")) {
                 Brain.resetAll(this)
                 Toast.makeText(this, "AI memory cleared", Toast.LENGTH_SHORT).show()
             })
         }
 
+        ai.addView(
+            Ui.row(
+                this, "Organize old screenshots",
+                "Sorts the screenshots already on your phone into folders. You approve each group.",
+                link("Start ›")
+            ) { startActivity(Intent(this, OrganizeActivity::class.java)) }
+        )
+
         // ---- general
         val gn = section("GENERAL")
-        gn.addView(Ui.row(this, "Back up everything (ZIP)", "Saved to Downloads/ScreenshotSaver", link("Export ›")) {
-            Ops.exportZip(this, userFolders(), "ScreenshotSaver-backup")
+        val detectOn = sp.getBoolean("detect", true)
+        gn.addView(
+            Ui.row(
+                this, "Detect links and QR codes",
+                "Shows an Open link or Copy button in the popup when a screenshot has one.",
+                Ui.onOffPill(this, detectOn)
+            ) {
+                sp.edit().putBoolean("detect", !detectOn).apply()
+                render()
+            }
+        )
+        gn.addView(Ui.row(this, "Private folders", "Long-press a folder on the home screen and choose Lock. It is hidden from the gallery and opens with your fingerprint or PIN.", null, null))
+        gn.addView(Ui.row(this, "Back up everything (ZIP)", "Saved to Downloads/ScreenshotSaver (locked folders are skipped)", link("Export ›")) {
+            Ops.exportZip(this, userFolders().filter { !Locks.isLocked(this, it.name) }, "ScreenshotSaver-backup")
         })
         gn.addView(Ui.row(this, "Clear picture history", null, link("Clear ›")) {
             History.clear(this)

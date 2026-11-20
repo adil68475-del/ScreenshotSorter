@@ -64,17 +64,7 @@ class ShareActivity : Activity() {
                 if (f == null) {
                     Toast.makeText(this, "Couldn't read that picture", Toast.LENGTH_SHORT).show()
                 } else {
-                    val app = applicationContext
-                    val ai = Brain.enabled(app) && !f.isVideoFile()
-                    val p = FolderPopup(app, f, ai) {}
-                    p.show()
-                    if (ai) {
-                        Brain.analyze(f) { a ->
-                            val names = userFolders().map { it.name }
-                            val s = if (a != null) Brain.suggest(app, a, names) else null
-                            p.setAnalysis(a, s)
-                        }
-                    }
+                    showPopupFor(applicationContext, f, null) {}
                 }
                 finish()
             }

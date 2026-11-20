@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Handler
 import android.os.Looper
+import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.label.ImageLabeling
 import com.google.mlkit.vision.label.defaults.ImageLabelerOptions
@@ -16,15 +17,23 @@ import java.io.File
 // On-device "AI": ML Kit looks at the picture (what is in it + any text), and the app
 // remembers which folder you chose for pictures like it. Nothing is uploaded.
 object Brain {
-    class Analysis(val labels: List<String>, val words: List<String>) {
+    class Analysis(val labels: List<String>, val words: List<String>, val links: List<String> = emptyList()) {
         val features: List<String> get() = labels.map { "l:$it" } + words.map { "w:$it" }
     }
 
-    class Suggestion(val name: String, val isNew: Boolean, val reason: String)
+    class Suggestion(
+        val name: String,
+        val isNew: Boolean,
+        val reason: String,
+        val score: Int = 0,
+        val learned: Boolean = false
+    )
 
     private val main = Handler(Looper.getMainLooper())
     private val labeler by lazy { ImageLabeling.getClient(ImageLabelerOptions.DEFAULT_OPTIONS) }
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
+    private val scanner by lazy { BarcodeScanning.getClient() }
+    private val urlRe = Regex("(https?://|www\\.)[^\\s]+", RegexOption.IGNORE_CASE)
 
     private fun settings(ctx: Context) = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private fun store(ctx: Context) = ctx.getSharedPreferences("brain", Context.MODE_PRIVATE)
@@ -94,7 +103,8 @@ object Brain {
         "year", "week", "month", "photo", "photos", "video", "videos", "type", "post", "edit"
     )
 
-    fun analyze(f: File, done: (Analysis?) -> Unit) {
+    // wantLabels = false is the cheaper mode (only text + QR codes, for link detection).
+    fun analyze(f: File, wantLabels: Boolean, done: (Analysis?) -> Unit) {
         Thread {
             val bmp = decodeSmall(f)
             if (bmp == null) {
@@ -102,19 +112,54 @@ object Brain {
                 return@Thread
             }
             val img = InputImage.fromBitmap(bmp, 0)
-            labeler.process(img)
-                .addOnSuccessListener { ls ->
-                    val labels = ls.filter { it.confidence >= 0.6f }
+            labelStep(img, wantLabels) { labels ->
+                textStep(img) { text ->
+                    codeStep(img) { codes ->
+                        done(Analysis(labels, keywords(text), linksFrom(text, codes)))
+                    }
+                }
+            }
+        }.start()
+    }
+
+    private fun labelStep(img: InputImage, want: Boolean, cb: (List<String>) -> Unit) {
+        if (!want) {
+            cb(emptyList())
+            return
+        }
+        labeler.process(img)
+            .addOnSuccessListener { ls ->
+                cb(
+                    ls.filter { it.confidence >= 0.6f }
                         .map { it.text.lowercase() }
                         .filter { it !in generic }
                         .distinct()
                         .take(8)
-                    recognizer.process(img)
-                        .addOnSuccessListener { t -> done(Analysis(labels, keywords(t.text))) }
-                        .addOnFailureListener { done(Analysis(labels, emptyList())) }
-                }
-                .addOnFailureListener { done(null) }
-        }.start()
+                )
+            }
+            .addOnFailureListener { cb(emptyList()) }
+    }
+
+    private fun textStep(img: InputImage, cb: (String) -> Unit) {
+        recognizer.process(img)
+            .addOnSuccessListener { t -> cb(t.text) }
+            .addOnFailureListener { cb("") }
+    }
+
+    private fun codeStep(img: InputImage, cb: (List<String>) -> Unit) {
+        scanner.process(img)
+            .addOnSuccessListener { list -> cb(list.mapNotNull { it.rawValue }) }
+            .addOnFailureListener { cb(emptyList()) }
+    }
+
+    private fun linksFrom(text: String, codes: List<String>): List<String> {
+        val out = ArrayList<String>()
+        for (c in codes) if (c.isNotBlank() && c !in out) out.add(c.trim())
+        for (m in urlRe.findAll(text)) {
+            val u = m.value.trimEnd('.', ',', ')', ';', ':')
+            if (u.length > 6 && u !in out) out.add(u)
+        }
+        return out.take(3)
     }
 
     private fun decodeSmall(f: File): Bitmap? {
@@ -219,7 +264,7 @@ object Brain {
             }
         }
         if (best != null && bestScore >= 4) {
-            return Suggestion(best, false, "Looks like your \"$best\" pictures")
+            return Suggestion(best, false, "Looks like your \"$best\" pictures", bestScore, true)
         }
         val idea = ideaFor(a) ?: return null
         val match = existing.firstOrNull { it.equals(idea, ignoreCase = true) }

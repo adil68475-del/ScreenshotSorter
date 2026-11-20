@@ -105,6 +105,11 @@ class MainActivity : Activity() {
         pLp.topMargin = dp(8)
         col.addView(pillsRow, pLp)
 
+        val organize = Ui.button(this, "✨  Organize old screenshots", false, true) {
+            startActivity(Intent(this, OrganizeActivity::class.java))
+        }
+        col.addView(organize)
+
         noticeBox = LinearLayout(this)
         noticeBox.orientation = LinearLayout.VERTICAL
         col.addView(noticeBox, LinearLayout.LayoutParams(MATCH, WRAP))
@@ -141,6 +146,8 @@ class MainActivity : Activity() {
             Watchdog.ensure(this)
         }
         refreshNotice(if (wasKilled) beat else 0L)
+        val app = applicationContext
+        Thread { AutoClean.run(app) }.start()
         updateGate()
         refreshPills()
         refreshFolders()
@@ -281,10 +288,12 @@ class MainActivity : Activity() {
     }
 
     private fun openFolder(d: File) {
-        val i = Intent(this, FolderActivity::class.java)
-        i.putExtra("mode", "folder")
-        i.putExtra("dir", d.path)
-        startActivity(i)
+        Locks.require(this, d.name) {
+            val i = Intent(this, FolderActivity::class.java)
+            i.putExtra("mode", "folder")
+            i.putExtra("dir", d.path)
+            startActivity(i)
+        }
     }
 
     private fun openSearch() {
@@ -391,36 +400,37 @@ class MainActivity : Activity() {
     }
 
     private fun folderCard(d: File, i: Int, grid: Boolean): View {
-        val n = listMedia(d).size
+        val locked = Locks.isLocked(this, d.name)
+        val n = if (locked) 0 else listMedia(d).size
         val card = LinearLayout(this)
         if (!grid) {
             card.orientation = LinearLayout.HORIZONTAL
             card.gravity = Gravity.CENTER_VERTICAL
             card.setPadding(dp(18), dp(16), dp(18), dp(16))
-            card.addView(Ui.text(this, "📁", 20f))
+            card.addView(Ui.text(this, if (locked) "🔒" else "📁", 20f))
             val name = Ui.text(this, d.name, 17f, Ui.fg(), Ui.medium())
             name.setPadding(dp(14), 0, dp(8), 0)
             name.maxLines = 1
             name.ellipsize = TextUtils.TruncateAt.END
             card.addView(name, LinearLayout.LayoutParams(0, WRAP, 1f))
-            card.addView(Ui.text(this, "$n", 15f, Ui.muted()))
+            card.addView(Ui.text(this, if (locked) "Locked" else "$n", 15f, Ui.muted()))
             card.addView(Ui.text(this, "  ›", 20f, Ui.muted()))
         } else {
             card.orientation = LinearLayout.VERTICAL
             card.setPadding(dp(16), dp(16), dp(16), dp(16))
-            card.addView(Ui.text(this, "📁", 28f))
+            card.addView(Ui.text(this, if (locked) "🔒" else "📁", 28f))
             val name = Ui.text(this, d.name, 16f, Ui.fg(), Ui.medium())
             name.setPadding(0, dp(10), 0, 0)
             name.maxLines = 1
             name.ellipsize = TextUtils.TruncateAt.END
             card.addView(name)
-            card.addView(Ui.text(this, if (n == 1) "1 item" else "$n items", 13f, Ui.muted()))
+            card.addView(Ui.text(this, if (locked) "Locked" else if (n == 1) "1 item" else "$n items", 13f, Ui.muted()))
         }
         card.background = Ui.ripple(this, Ui.glass(this, 18), 18)
         card.isClickable = true
         card.setOnClickListener { openFolder(d) }
         card.setOnLongClickListener {
-            folderActions(d)
+            Locks.require(this, d.name) { folderActions(d) }
             true
         }
         card.alpha = 0f
@@ -433,40 +443,81 @@ class MainActivity : Activity() {
 
     private fun folderActions(d: File) {
         val n = listMedia(d).size
-        Sheet.show(
-            this, d.name, "$n item(s)",
-            listOf(
-                Sheet.Item("Rename", 0) {
-                    Sheet.input(this, "Rename folder", d.name, "Rename") { raw ->
-                        val nn = Ops.cleanName(raw)
-                        if (nn.isNotEmpty() && nn != d.name) {
-                            if (Ops.renameDir(this, d, nn)) {
-                                val usage = getSharedPreferences("usage", MODE_PRIVATE)
-                                val cnt = usage.getInt(d.name, 0)
-                                usage.edit().remove(d.name).putInt(nn, cnt).apply()
-                                Brain.renameFolder(this, d.name, nn)
-                            } else {
-                                Toast.makeText(this, "Couldn't rename (name taken?)", Toast.LENGTH_SHORT).show()
-                            }
-                            refreshFolders()
-                        }
+        val locked = Locks.isLocked(this, d.name)
+        val clean = AutoClean.days(this, d.name)
+        val sub = "$n item(s)" + if (clean > 0) " · auto-clean after $clean days" else ""
+        val items = ArrayList<Sheet.Item>()
+        items.add(Sheet.Item("Rename", 0) {
+            Sheet.input(this, "Rename folder", d.name, "Rename") { raw ->
+                val nn = Ops.cleanName(raw)
+                if (nn.isNotEmpty() && nn != d.name) {
+                    if (Ops.renameDir(this, d, nn)) {
+                        val usage = getSharedPreferences("usage", MODE_PRIVATE)
+                        val cnt = usage.getInt(d.name, 0)
+                        usage.edit().remove(d.name).putInt(nn, cnt).apply()
+                        Brain.renameFolder(this, d.name, nn)
+                        AutoClean.rename(this, d.name, nn)
+                        Locks.rename(this, d.name, nn)
+                    } else {
+                        Toast.makeText(this, "Couldn't rename (name taken?)", Toast.LENGTH_SHORT).show()
                     }
-                },
-                Sheet.Item("Export as ZIP", 0) { Ops.exportZip(this, listOf(d), d.name) },
-                Sheet.Item("Delete folder", 2) {
-                    Sheet.show(
-                        this, "Delete \"${d.name}\"?",
-                        "$n item(s) go to the Recycle bin and are removed after ${Trash.DAYS} days.",
-                        listOf(Sheet.Item("Delete folder", 2) {
-                            Ops.deleteDir(this, d)
-                            getSharedPreferences("usage", MODE_PRIVATE).edit().remove(d.name).apply()
-                            Brain.forgetFolder(this, d.name)
-                            refreshFolders()
-                            refreshPills()
-                        })
-                    )
+                    refreshFolders()
                 }
+            }
+        })
+        items.add(Sheet.Item("Auto-clean…", 0) { autoCleanSheet(d) })
+        items.add(Sheet.Item(if (locked) "Remove lock" else "Lock (fingerprint / PIN)", 0) {
+            if (locked) {
+                Locks.authenticate(this, "Remove lock from \"${d.name}\"") {
+                    Locks.unlockFolder(this, d)
+                    refreshFolders()
+                }
+            } else if (!Locks.canAuth(this)) {
+                Toast.makeText(
+                    this, "Set a screen lock (PIN, pattern or fingerprint) in your phone settings first",
+                    Toast.LENGTH_LONG
+                ).show()
+            } else {
+                Locks.lockFolder(this, d)
+                Toast.makeText(this, "Locked. It is now hidden from the gallery.", Toast.LENGTH_SHORT).show()
+                refreshFolders()
+            }
+        })
+        items.add(Sheet.Item("Export as ZIP", 0) { Ops.exportZip(this, listOf(d), d.name) })
+        items.add(Sheet.Item("Delete folder", 2) {
+            Sheet.show(
+                this, "Delete \"${d.name}\"?",
+                "$n item(s) go to the Recycle bin and are removed after ${Trash.DAYS} days.",
+                listOf(Sheet.Item("Delete folder", 2) {
+                    Ops.deleteDir(this, d)
+                    getSharedPreferences("usage", MODE_PRIVATE).edit().remove(d.name).apply()
+                    Brain.forgetFolder(this, d.name)
+                    AutoClean.set(this, d.name, 0)
+                    Locks.forget(this, d.name)
+                    refreshFolders()
+                    refreshPills()
+                })
             )
-        )
+        })
+        Sheet.show(this, d.name, sub, items)
+    }
+
+    private fun autoCleanSheet(d: File) {
+        Sheet.panel(this, "Auto-clean \"${d.name}\"") { body ->
+            val note = Ui.text(
+                this,
+                "Pictures older than this are moved to the Recycle bin automatically (and stay there for ${Trash.DAYS} days).",
+                13f, Ui.muted()
+            )
+            note.setPadding(dp(4), dp(8), dp(4), dp(4))
+            body.addView(note)
+            val labels = listOf("Off", "7 days", "30 days", "90 days", "1 year")
+            val values = listOf(0, 7, 30, 90, 365)
+            val cur = AutoClean.days(this, d.name)
+            val idx = values.indexOf(cur).let { if (it < 0) 0 else it }
+            body.addView(Ui.chips(this, labels, labels[idx], 3) { v ->
+                AutoClean.set(this, d.name, values[labels.indexOf(v)])
+            })
+        }
     }
 }

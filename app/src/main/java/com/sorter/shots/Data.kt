@@ -1,6 +1,11 @@
 package com.sorter.shots
 
+import android.app.Activity
 import android.content.Context
+import android.hardware.biometrics.BiometricManager
+import android.hardware.biometrics.BiometricPrompt
+import android.os.CancellationSignal
+import android.widget.Toast
 import android.content.SharedPreferences
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
@@ -218,6 +223,112 @@ object Trash {
         val cutoff = System.currentTimeMillis() - DAYS * 86_400_000L
         for (f in listMedia(DIR)) {
             if (deletedAt(ctx, f) < cutoff) deleteForever(ctx, f)
+        }
+    }
+}
+
+// Private folders: hidden from the gallery (.nomedia) and opened with fingerprint / PIN.
+object Locks {
+    private const val FLAGS = BiometricManager.Authenticators.BIOMETRIC_WEAK or
+        BiometricManager.Authenticators.DEVICE_CREDENTIAL
+
+    private var unlockedUntil = 0L
+
+    private fun sp(ctx: Context) = ctx.getSharedPreferences("locks", Context.MODE_PRIVATE)
+
+    fun isLocked(ctx: Context, name: String): Boolean = sp(ctx).getBoolean(name, false)
+
+    fun canAuth(ctx: Context): Boolean =
+        ctx.getSystemService(BiometricManager::class.java).canAuthenticate(FLAGS) ==
+            BiometricManager.BIOMETRIC_SUCCESS
+
+    fun authenticate(act: Activity, title: String, onOk: () -> Unit) {
+        if (!canAuth(act)) {
+            Toast.makeText(
+                act, "Set a screen lock (PIN, pattern or fingerprint) in your phone settings first",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        val prompt = BiometricPrompt.Builder(act)
+            .setTitle(title)
+            .setAllowedAuthenticators(FLAGS)
+            .build()
+        prompt.authenticate(
+            CancellationSignal(), act.mainExecutor,
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult?) {
+                    unlockedUntil = System.currentTimeMillis() + 60_000L
+                    onOk()
+                }
+            }
+        )
+    }
+
+    // Runs onOk right away for normal folders, after fingerprint / PIN for locked ones.
+    fun require(act: Activity, name: String, onOk: () -> Unit) {
+        if (!isLocked(act, name) || System.currentTimeMillis() < unlockedUntil) {
+            onOk()
+        } else {
+            authenticate(act, "Open \"$name\"", onOk)
+        }
+    }
+
+    fun lockFolder(ctx: Context, dir: File) {
+        sp(ctx).edit().putBoolean(dir.name, true).apply()
+        try {
+            File(dir, ".nomedia").createNewFile()
+        } catch (_: Exception) {
+        }
+        Ops.scan(ctx, listMedia(dir).map { it.path })
+    }
+
+    fun unlockFolder(ctx: Context, dir: File) {
+        sp(ctx).edit().remove(dir.name).apply()
+        try {
+            File(dir, ".nomedia").delete()
+        } catch (_: Exception) {
+        }
+        Ops.scan(ctx, listMedia(dir).map { it.path })
+    }
+
+    fun rename(ctx: Context, old: String, new: String) {
+        if (isLocked(ctx, old)) sp(ctx).edit().remove(old).putBoolean(new, true).apply()
+    }
+
+    fun forget(ctx: Context, name: String) {
+        sp(ctx).edit().remove(name).apply()
+    }
+}
+
+// "Delete pictures older than N days in this folder" (they go to the recycle bin first).
+object AutoClean {
+    private fun sp(ctx: Context) = ctx.getSharedPreferences("autoclean", Context.MODE_PRIVATE)
+
+    fun days(ctx: Context, name: String): Int = sp(ctx).getInt(name, 0)
+
+    fun set(ctx: Context, name: String, days: Int) {
+        if (days <= 0) sp(ctx).edit().remove(name).apply() else sp(ctx).edit().putInt(name, days).apply()
+    }
+
+    fun rename(ctx: Context, old: String, new: String) {
+        val d = days(ctx, old)
+        if (d > 0) sp(ctx).edit().remove(old).putInt(new, d).apply()
+    }
+
+    // At most once every 6 hours.
+    fun run(ctx: Context) {
+        val s = Prefs.sp(ctx)
+        val now = System.currentTimeMillis()
+        if (now - s.getLong("cleanLast", 0L) < 6 * 3_600_000L) return
+        s.edit().putLong("cleanLast", now).apply()
+        for (d in userFolders()) {
+            val n = days(ctx, d.name)
+            if (n <= 0) continue
+            val cutoff = now - n * 86_400_000L
+            for (f in listMedia(d)) {
+                if (f.lastModified() < cutoff) Trash.move(ctx, f)
+            }
         }
     }
 }

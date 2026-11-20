@@ -1,8 +1,12 @@
 package com.sorter.shots
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.net.Uri
 import android.os.Environment
 import android.text.InputType
 import android.text.TextUtils
@@ -24,10 +28,35 @@ import java.io.File
 private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
+// Shows the "Save to…" popup for a picture and starts the on-device analysis it needs.
+// pre = an analysis that was already done (auto-save mode), so it is not repeated.
+fun showPopupFor(
+    ctx: Context,
+    f: File,
+    pre: Pair<Brain.Analysis?, Brain.Suggestion?>?,
+    onClosed: () -> Unit
+): FolderPopup {
+    val video = f.isVideoFile()
+    val ai = Brain.enabled(ctx) && !video
+    val detect = Prefs.sp(ctx).getBoolean("detect", true) && !video
+    val p = FolderPopup(ctx, f, ai, detect, onClosed)
+    p.show()
+    if (pre != null) {
+        p.setAnalysis(pre.first, pre.second)
+    } else if (ai || detect) {
+        Brain.analyze(f, ai) { a ->
+            val s = if (ai && a != null) Brain.suggest(ctx, a, userFolders().map { it.name }) else null
+            p.setAnalysis(a, s)
+        }
+    }
+    return p
+}
+
 class FolderPopup(
     private val ctx: Context,
     private val file: File,
     private val aiOn: Boolean,
+    private val detectOn: Boolean,
     private val onClosed: () -> Unit
 ) {
     companion object {
@@ -39,10 +68,10 @@ class FolderPopup(
     private val root = FrameLayout(ctx)
     private var shown = false
 
-    // AI state
+    // analysis state
     private var analysis: Brain.Analysis? = null
     private var suggestion: Brain.Suggestion? = null
-    private var aiDone = false
+    private var done = false
     private var slot: LinearLayout? = null
 
     private fun dp(v: Int) = Ui.dp(ctx, v)
@@ -81,34 +110,91 @@ class FolderPopup(
         root.animate().alpha(1f).setDuration(180).start()
     }
 
-    // Called by the service when the on-device AI has looked at the picture.
+    // Called when the on-device analysis has finished.
     fun setAnalysis(a: Brain.Analysis?, s: Brain.Suggestion?) {
         analysis = a
         suggestion = s
-        aiDone = true
+        done = true
         if (shown) fillSlot()
+    }
+
+    // ---------------------------------------------------------------- links / QR
+
+    private fun isUrl(raw: String) =
+        raw.startsWith("http://", true) || raw.startsWith("https://", true) || raw.startsWith("www.", true)
+
+    private fun hostOf(raw: String): String = try {
+        Uri.parse(if (raw.startsWith("www.", true)) "https://$raw" else raw).host ?: raw.take(30)
+    } catch (e: Exception) {
+        raw.take(30)
+    }
+
+    private fun openLink(raw: String) {
+        val url = if (raw.startsWith("www.", true)) "https://$raw" else raw
+        try {
+            val i = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            ctx.startActivity(i)
+            dismiss()
+        } catch (e: Exception) {
+            Toast.makeText(ctx, "Couldn't open that link", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun copyText(text: String) {
+        val cm = ctx.getSystemService(ClipboardManager::class.java)
+        cm.setPrimaryClip(ClipData.newPlainText("Screenshot Saver", text))
+        Toast.makeText(ctx, "Copied", Toast.LENGTH_SHORT).show()
     }
 
     private fun fillSlot() {
         val s = slot ?: return
         s.removeAllViews()
-        if (!aiDone) {
-            val t = Ui.text(ctx, "✨  Looking at your screenshot…", 13f, Ui.muted())
-            t.setPadding(dp(4), dp(12), 0, dp(2))
-            t.alpha = 0.4f
-            t.animate().alpha(1f).setDuration(700).start()
-            s.addView(t)
+        if (!done) {
+            if (aiOn) {
+                val t = Ui.text(ctx, "✨  Looking at your screenshot…", 13f, Ui.muted())
+                t.setPadding(dp(4), dp(12), 0, dp(2))
+                t.alpha = 0.4f
+                t.animate().alpha(1f).setDuration(700).start()
+                s.addView(t)
+            }
             return
         }
-        val sg = suggestion ?: return
-        val label = if (sg.isNew) "✨  Create \"${sg.name}\" and save" else "✨  Save to ${sg.name}"
-        val b = Ui.button(ctx, label, true, true) { moveTo(File(BASE, sg.name)) }
-        (b.layoutParams as LinearLayout.LayoutParams).topMargin = dp(12)
-        s.addView(b)
-        val why = Ui.text(ctx, sg.reason, 11f, Ui.muted())
-        why.gravity = Gravity.CENTER
-        why.setPadding(0, dp(4), 0, 0)
-        s.addView(why, LinearLayout.LayoutParams(MATCH, WRAP))
+        val sg = suggestion
+        if (aiOn && sg != null) {
+            val label = if (sg.isNew) "✨  Create \"${sg.name}\" and save" else "✨  Save to ${sg.name}"
+            val b = Ui.button(ctx, label, true, true) { moveTo(File(BASE, sg.name)) }
+            (b.layoutParams as LinearLayout.LayoutParams).topMargin = dp(12)
+            s.addView(b)
+            val why = Ui.text(ctx, sg.reason, 11f, Ui.muted())
+            why.gravity = Gravity.CENTER
+            why.setPadding(0, dp(4), 0, 0)
+            s.addView(why, LinearLayout.LayoutParams(MATCH, WRAP))
+        }
+        val a = analysis
+        if (detectOn && a != null) {
+            for (raw in a.links.take(2)) {
+                val url = isUrl(raw)
+                val label = if (url) "🔗  Open  ${hostOf(raw)}"
+                else "📋  Copy:  ${raw.take(26)}${if (raw.length > 26) "…" else ""}"
+                val b = Ui.button(ctx, label, false, true) {
+                    if (url) openLink(raw) else copyText(raw)
+                }
+                (b.layoutParams as LinearLayout.LayoutParams).topMargin = dp(8)
+                s.addView(b)
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- screens
+
+    private fun openEditor() {
+        val i = Intent(ctx, EditActivity::class.java)
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        i.putExtra("path", file.path)
+        i.putExtra("popup", true)
+        dismiss()
+        ctx.startActivity(i)
     }
 
     private fun showList() {
@@ -131,10 +217,13 @@ class FolderPopup(
         name.ellipsize = TextUtils.TruncateAt.MIDDLE
         col.addView(name)
         head.addView(col, LinearLayout.LayoutParams(0, WRAP, 1f))
+        if (!file.isVideoFile()) {
+            head.addView(Ui.iconButton(ctx, "✎") { openEditor() })
+        }
         c.addView(head)
         Thumbs.load(file, dp(104), iv)
 
-        if (aiOn) {
+        if (aiOn || detectOn) {
             val sl = LinearLayout(ctx)
             sl.orientation = LinearLayout.VERTICAL
             c.addView(sl, LinearLayout.LayoutParams(MATCH, WRAP))
@@ -142,7 +231,7 @@ class FolderPopup(
             fillSlot()
         }
 
-        FolderPopup.BASE.mkdirs()
+        BASE.mkdirs()
         val folders = userFolders().sortedBy { it.name.lowercase() }
         val usage = ctx.getSharedPreferences("usage", Context.MODE_PRIVATE)
         val quick = folders.filter { usage.getInt(it.name, 0) > 0 }.maxByOrNull { usage.getInt(it.name, 0) }
@@ -160,10 +249,11 @@ class FolderPopup(
             list.addView(e)
         }
         for (f in folders) {
-            list.addView(Ui.button(ctx, "📁   ${f.name}", false, false) { moveTo(f) })
+            val icon = if (Locks.isLocked(ctx, f.name)) "🔒" else "📁"
+            list.addView(Ui.button(ctx, "$icon   ${f.name}", false, false) { moveTo(f) })
         }
 
-        val maxH = (dm.heightPixels * 0.34).toInt()
+        val maxH = (dm.heightPixels * 0.30).toInt()
         val sv = object : ScrollView(ctx) {
             override fun onMeasure(w: Int, h: Int) {
                 super.onMeasure(w, View.MeasureSpec.makeMeasureSpec(maxH, View.MeasureSpec.AT_MOST))
@@ -259,8 +349,8 @@ class FolderPopup(
         usage.edit().putInt(dir.name, usage.getInt(dir.name, 0) + 1).apply()
         History.add(ctx, target.path)
         val a = analysis
-        if (aiOn && a != null) {
-            Brain.learn(ctx, dir.name, a.features)
+        if (a != null) {
+            if (aiOn) Brain.learn(ctx, dir.name, a.features)
             Brain.index(ctx, target.name, a)
         }
         showDone(dir.name)

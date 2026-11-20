@@ -170,6 +170,7 @@ class WatchdogJob : JobService() {
     override fun onStartJob(params: JobParameters?): Boolean {
         Watchdog.ensure(this)
         Watchdog.scheduleTrigger(this) // content triggers are one-shot, so arm it again
+        Thread { AutoClean.run(applicationContext) }.start()
         return false
     }
 

@@ -3,12 +3,14 @@ package com.sorter.shots
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.database.ContentObserver
+import android.graphics.drawable.Icon
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -16,7 +18,11 @@ import android.os.IBinder
 import android.os.Looper
 import android.provider.MediaStore
 import android.provider.Settings
+import android.widget.Toast
 import java.io.File
+
+// How sure the AI must be before it saves a picture without asking.
+private const val AUTO_SCORE = 14
 
 class WatcherService : Service() {
     private val handler = Handler(Looper.getMainLooper())
@@ -64,15 +70,22 @@ class WatcherService : Service() {
         nm.createNotificationChannel(
             NotificationChannel("watch", "Watching for screenshots", NotificationManager.IMPORTANCE_LOW)
         )
+        nm.createNotificationChannel(
+            NotificationChannel("auto", "Saved automatically", NotificationManager.IMPORTANCE_LOW)
+        )
         startForeground(1, notification())
         for (u in uris) contentResolver.registerContentObserver(u, true, observer)
         Watchdog.schedule(this)
         heartbeat.run()
         handler.postDelayed({ check() }, 1500)
-        try {
-            Trash.purgeOld(this)
-        } catch (_: Exception) {
-        }
+        val app = applicationContext
+        Thread {
+            try {
+                Trash.purgeOld(app)
+                AutoClean.run(app)
+            } catch (_: Exception) {
+            }
+        }.start()
     }
 
     // Swiped away from recent apps: ask the watchdog to make sure we are still alive.
@@ -142,16 +155,68 @@ class WatcherService : Service() {
     private fun show(f: File) {
         if (popup != null || !Settings.canDrawOverlays(this)) return
         val ai = Brain.enabled(this) && !f.isVideoFile()
-        val p = FolderPopup(this, f, ai) { popup = null }
-        popup = p
-        p.show()
-        if (ai) {
-            Brain.analyze(f) { a ->
-                val names = userFolders().map { it.name }
-                val s = if (a != null) Brain.suggest(this, a, names) else null
-                p.setAnalysis(a, s)
+        val auto = ai && Prefs.sp(this).getBoolean("autoSave", false)
+        if (!auto) {
+            popup = showPopupFor(this, f, null) { popup = null }
+            return
+        }
+        // Auto mode: look first, save silently only if the AI is very sure.
+        Brain.analyze(f, true) { a ->
+            val s = if (a != null) Brain.suggest(this, a, userFolders().map { it.name }) else null
+            val usage = getSharedPreferences("usage", Context.MODE_PRIVATE)
+            val sure = a != null && s != null && s.learned && !s.isNew &&
+                s.score >= AUTO_SCORE && usage.getInt(s.name, 0) >= 3
+            if (sure && a != null && s != null && autoSave(f, a, s)) {
+                // saved
+            } else if (popup == null) {
+                popup = showPopupFor(this, f, Pair(a, s)) { popup = null }
             }
         }
+    }
+
+    private fun autoSave(f: File, a: Brain.Analysis, s: Brain.Suggestion): Boolean {
+        val back = f.parentFile?.path ?: return false
+        val t = Ops.moveFile(this, f, File(FolderPopup.BASE, s.name)) ?: return false
+        val usage = getSharedPreferences("usage", Context.MODE_PRIVATE)
+        usage.edit().putInt(s.name, usage.getInt(s.name, 0) + 1).apply()
+        History.add(this, t.path)
+        Brain.learn(this, s.name, a.features)
+        Brain.index(this, t.name, a)
+
+        val id = (System.currentTimeMillis() % 100000).toInt() + 100
+        val undo = Intent(this, UndoReceiver::class.java)
+        undo.putExtra("to", t.path)
+        undo.putExtra("back", back)
+        undo.putExtra("nid", id)
+        val pi = PendingIntent.getBroadcast(
+            this, id, undo, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val action = Notification.Action.Builder(
+            Icon.createWithResource(this, android.R.drawable.ic_menu_revert), "Undo", pi
+        ).build()
+        val n = Notification.Builder(this, "auto")
+            .setSmallIcon(android.R.drawable.ic_menu_gallery)
+            .setContentTitle("Saved to ${s.name}")
+            .setContentText(t.name)
+            .addAction(action)
+            .setAutoCancel(true)
+            .setTimeoutAfter(60_000L)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(id, n)
+        return true
+    }
+}
+
+// "Undo" button on the auto-save notification: puts the picture back where it was.
+class UndoReceiver : BroadcastReceiver() {
+    override fun onReceive(ctx: Context, intent: Intent) {
+        val to = File(intent.getStringExtra("to") ?: return)
+        val back = intent.getStringExtra("back") ?: return
+        if (to.exists() && back.isNotEmpty()) {
+            Ops.moveFile(ctx, to, File(back))
+            Toast.makeText(ctx, "Moved back", Toast.LENGTH_SHORT).show()
+        }
+        ctx.getSystemService(NotificationManager::class.java).cancel(intent.getIntExtra("nid", 0))
     }
 }
 
