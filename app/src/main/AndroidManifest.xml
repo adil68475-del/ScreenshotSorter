@@ -40,6 +40,7 @@
 
         <activity android:name=".EditActivity" android:exported="false" />
         <activity android:name=".OrganizeActivity" android:exported="false" />
+        <activity android:name=".PhoneSearchActivity" android:exported="false" />
 
         <receiver android:name=".UndoReceiver" android:exported="false" />
 
