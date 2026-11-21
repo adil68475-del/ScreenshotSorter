@@ -6,7 +6,11 @@ pluginManagement {
     }
 }
 dependencyResolutionManagement {
-    repositories { google(); mavenCentral() }
+    repositories {
+        google()
+        mavenCentral()
+        maven { url = uri("https://jitpack.io") }
+    }
 }
 rootProject.name = "ScreenshotSorter"
 include(":app")
