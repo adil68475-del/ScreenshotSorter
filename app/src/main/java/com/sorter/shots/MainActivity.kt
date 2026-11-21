@@ -105,6 +105,11 @@ class MainActivity : Activity() {
         pLp.topMargin = dp(8)
         col.addView(pillsRow, pLp)
 
+        val phoneSearch = Ui.button(this, "🔎  Search my phone", true, true) {
+            startActivity(Intent(this, PhoneSearchActivity::class.java))
+        }
+        col.addView(phoneSearch)
+
         val organize = Ui.button(this, "✨  Organize old screenshots", false, true) {
             startActivity(Intent(this, OrganizeActivity::class.java))
         }
