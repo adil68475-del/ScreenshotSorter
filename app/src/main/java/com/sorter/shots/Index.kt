@@ -101,7 +101,7 @@ object SearchIndex {
 
     // Best matches first. Every word you typed has to be found (partial words and small typos are OK).
     fun search(ctx: Context, query: String): List<File> {
-        val tokens = query.lowercase().split(splitter).filter { it.length >= 2 }
+        val tokens = Ocr.normalize(query.lowercase()).split(splitter).filter { it.length >= 2 }
         if (tokens.isEmpty()) return emptyList()
         val hits = ArrayList<Pair<File, Int>>()
         db(ctx).rawQuery("SELECT path, text, labels FROM docs", null).use { c ->
@@ -111,7 +111,7 @@ object SearchIndex {
                 val parent = f.parentFile?.name ?: ""
                 if (Locks.isLocked(ctx, parent)) continue
                 val hay = (c.getString(1) ?: "") + " " + (c.getString(2) ?: "") + " " +
-                    f.name.lowercase() + " " + parent.lowercase()
+                    Ocr.normalize(f.name.lowercase()) + " " + Ocr.normalize(parent.lowercase())
                 var words: List<String>? = null
                 var score = 0
                 var all = true
@@ -146,6 +146,13 @@ object Indexer {
     @Volatile var total = 0
     @Volatile var done = 0
     @Volatile var stop = false
+
+    // Throws the index away and reads everything again (use after adding a language).
+    fun rebuild(ctx: Context) {
+        if (running) return
+        SearchIndex.clear(ctx)
+        start(ctx)
+    }
 
     fun start(ctx: Context) {
         if (running || !Perms.files()) return
@@ -197,21 +204,38 @@ object Indexer {
         val todo = files.filter { known[it.path] != it.lastModified() }
         total = todo.size
         done = 0
-        for (f in todo) {
-            if (stop) break
-            val latch = CountDownLatch(1)
-            var res: Brain.Analysis? = null
-            Brain.analyze(f, true) { a ->
-                res = a
-                latch.countDown()
+        val langs = Ocr.installed(ctx)
+        if (known.isEmpty()) {
+            Prefs.sp(ctx).edit().putString("indexLangs", langs.joinToString(",")).apply()
+        }
+        val engine = if (langs.isNotEmpty()) OcrEngine(ctx, langs) else null
+        try {
+            for (f in todo) {
+                if (stop) break
+                val latch = CountDownLatch(1)
+                var res: Brain.Analysis? = null
+                Brain.analyze(f, true) { a ->
+                    res = a
+                    latch.countDown()
+                }
+                latch.await(25, TimeUnit.SECONDS)
+                val a = res
+                var text = a?.fullText ?: ""
+                if (engine != null && engine.ok) {
+                    val bmp = Ocr.decodeForOcr(f)
+                    if (bmp != null) {
+                        text = text + " " + engine.read(bmp)
+                        bmp.recycle()
+                    }
+                }
+                text = Ocr.normalize(text.lowercase()).replace(Regex("\\s+"), " ").take(6000)
+                val labels = a?.labels?.joinToString(" ") ?: ""
+                SearchIndex.put(ctx, f.path, f.lastModified(), text, labels)
+                done++
+                Thread.sleep(30) // keeps the phone cool
             }
-            latch.await(25, TimeUnit.SECONDS)
-            val a = res
-            val text = a?.fullText?.lowercase()?.replace(Regex("\\s+"), " ")?.take(4000) ?: ""
-            val labels = a?.labels?.joinToString(" ") ?: ""
-            SearchIndex.put(ctx, f.path, f.lastModified(), text, labels)
-            done++
-            Thread.sleep(30) // keeps the phone cool
+        } finally {
+            engine?.close()
         }
     }
 }

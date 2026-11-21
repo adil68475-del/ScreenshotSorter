@@ -24,12 +24,13 @@ class PhoneSearchActivity : Activity() {
     private lateinit var backdrop: Backdrop
     private lateinit var searchBox: EditText
     private lateinit var statusBox: LinearLayout
+    private lateinit var langBox: LinearLayout
     private val handler = Handler(Looper.getMainLooper())
 
     private val poll = object : Runnable {
         override fun run() {
             renderStatus()
-            if (Indexer.running) handler.postDelayed(this, 800)
+            if (Indexer.running || Ocr.downloading != null) handler.postDelayed(this, 800)
         }
     }
 
@@ -92,6 +93,14 @@ class PhoneSearchActivity : Activity() {
         sLp.topMargin = dp(18)
         col.addView(statusBox, sLp)
 
+        langBox = LinearLayout(this)
+        langBox.orientation = LinearLayout.VERTICAL
+        langBox.setPadding(dp(16), dp(14), dp(16), dp(10))
+        langBox.background = Ui.glass(this, 20)
+        val lLp = LinearLayout.LayoutParams(MATCH, WRAP)
+        lLp.topMargin = dp(14)
+        col.addView(langBox, lLp)
+
         val sv = ScrollView(this)
         sv.isVerticalScrollBarEnabled = false
         sv.addView(col)
@@ -124,6 +133,11 @@ class PhoneSearchActivity : Activity() {
             Toast.makeText(this, "Build the search index first (the button below)", Toast.LENGTH_LONG).show()
             return
         }
+        if (q.any { it in '\u0600'..'\u06FF' } && !Ocr.has(this, "ara")) {
+            Toast.makeText(
+                this, "Tip: add the Arabic reader below to find text inside Arabic screenshots", Toast.LENGTH_LONG
+            ).show()
+        }
         val i = Intent(this, FolderActivity::class.java)
         i.putExtra("mode", "phone")
         i.putExtra("query", q)
@@ -138,6 +152,83 @@ class PhoneSearchActivity : Activity() {
     }
 
     private fun renderStatus() {
+        renderStatusCard()
+        renderLangs()
+    }
+
+    private fun renderLangs() {
+        langBox.removeAllViews()
+        langBox.addView(Ui.text(this, "Reading other languages", 15f, Ui.fg(), Ui.medium()))
+        val note = Ui.text(
+            this,
+            "English is built in. Add a language to find text inside screenshots written in it. Each one is a one-time download of a few MB.",
+            12f, Ui.muted()
+        )
+        note.setPadding(0, dp(4), 0, dp(4))
+        langBox.addView(note)
+        for ((code, label) in Ocr.LANGS) {
+            val installed = Ocr.has(this, code)
+            val busy = Ocr.downloading == code
+            val trailing = when {
+                installed -> Ui.text(this, "✓", 18f, Ui.GREEN, Ui.medium())
+                busy -> Ui.text(this, "${Ocr.progress}%", 14f, Theme.accent, Ui.medium())
+                else -> Ui.text(this, "Download ›", 14f, Theme.accent, Ui.medium())
+            }
+            langBox.addView(Ui.row(this, label, null, trailing) { onLang(code, label, installed) })
+        }
+    }
+
+    private fun onLang(code: String, label: String, installed: Boolean) {
+        if (Ocr.downloading != null) {
+            Toast.makeText(this, "Please wait for the current download", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (installed) {
+            Sheet.show(
+                this, "$label reader", "Installed. Removing it frees a little space.",
+                listOf(Sheet.Item("Remove", 2) {
+                    Ocr.remove(this, code)
+                    renderStatus()
+                })
+            )
+        } else {
+            Sheet.show(
+                this, "Download the $label reader?",
+                "Uses the internet once (a few MB). After that it works without internet.",
+                listOf(Sheet.Item("Download", 1) { startDownload(code, label) })
+            )
+        }
+    }
+
+    private fun startDownload(code: String, label: String) {
+        val app = applicationContext
+        Ocr.download(app, code) { ok ->
+            Toast.makeText(
+                app, if (ok) "$label reader ready" else "Download failed. Check your internet and try again.",
+                Toast.LENGTH_LONG
+            ).show()
+            if (!isFinishing && !isDestroyed) {
+                renderStatus()
+                if (ok && SearchIndex.count(this) > 0) rebuildPrompt()
+            }
+        }
+        handler.removeCallbacks(poll)
+        handler.post(poll)
+    }
+
+    private fun rebuildPrompt() {
+        Sheet.show(
+            this, "Read your screenshots again?",
+            "So the new language is included in search. This takes a while, like the first time.",
+            listOf(Sheet.Item("Rebuild now", 1) {
+                Indexer.rebuild(applicationContext)
+                handler.removeCallbacks(poll)
+                handler.post(poll)
+            })
+        )
+    }
+
+    private fun renderStatusCard() {
         statusBox.removeAllViews()
         val n = SearchIndex.count(this)
         if (!Perms.files()) {
@@ -182,6 +273,20 @@ class PhoneSearchActivity : Activity() {
         val note = Ui.text(this, "New screenshots are added automatically.", 12f, Ui.muted())
         note.setPadding(0, dp(4), 0, dp(4))
         statusBox.addView(note)
+        val curLangs = Ocr.installed(this).joinToString(",")
+        if ((Prefs.sp(this).getString("indexLangs", "") ?: "") != curLangs) {
+            val warn = Ui.text(
+                this, "A new language was added. Rebuild so older screenshots are read in it too.",
+                12f, Ui.muted()
+            )
+            warn.setPadding(0, dp(4), 0, dp(4))
+            statusBox.addView(warn)
+            statusBox.addView(Ui.button(this, "Rebuild now", true, true) {
+                Indexer.rebuild(applicationContext)
+                handler.removeCallbacks(poll)
+                handler.post(poll)
+            })
+        }
         statusBox.addView(Ui.button(this, "Update now", false, true) { beginIndexing() })
         statusBox.addView(Ui.dangerButton(this, "Clear search index") {
             Sheet.show(
