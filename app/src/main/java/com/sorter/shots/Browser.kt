@@ -82,6 +82,7 @@ fun loadFiles(ctx: Context, mode: String, dirPath: String, query: String, scope:
             it.isFile && !Locks.isLocked(ctx, it.parentFile?.name ?: "")
         }
         "search" -> Sorter.sortPics(searchFiles(ctx, query, scope), key, desc)
+        "phone" -> SearchIndex.search(ctx, query)
         else -> Sorter.sortPics(listMedia(File(dirPath)), key, desc)
     }
 }
@@ -221,6 +222,7 @@ class FolderActivity : Activity() {
 
     private fun baseTitle(): String = when (mode) {
         "search" -> "Search: $query"
+        "phone" -> "Phone: $query"
         "history" -> "History"
         "trash" -> "Recycle bin"
         else -> dir.name

@@ -109,6 +109,8 @@ class WatcherService : Service() {
             val p = f.absolutePath
             if (p == lastPath) continue
             lastPath = p
+            val app = applicationContext
+            handler.postDelayed({ Indexer.auto(app) }, 25_000L)
             waitStable(f, -1L, 0)
             return
         }

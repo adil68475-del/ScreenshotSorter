@@ -94,7 +94,7 @@ class MainActivity : Activity() {
             }
         })
         col.addView(searchBox, LinearLayout.LayoutParams(MATCH, WRAP))
-        col.addView(Ui.chips(this, listOf("All", "Folders", "Pictures"), "All", 3) {
+        col.addView(Ui.chips(this, listOf("All", "Folders", "Pictures", "Phone"), "All", 4) {
             scope = it
             refreshFolders()
         })
@@ -148,6 +148,7 @@ class MainActivity : Activity() {
         refreshNotice(if (wasKilled) beat else 0L)
         val app = applicationContext
         Thread { AutoClean.run(app) }.start()
+        Indexer.auto(app)
         updateGate()
         refreshPills()
         refreshFolders()
@@ -302,6 +303,19 @@ class MainActivity : Activity() {
             Toast.makeText(this, "Type something to search", Toast.LENGTH_SHORT).show()
             return
         }
+        if (scope == "Phone") {
+            val p = Intent(this, PhoneSearchActivity::class.java)
+            p.putExtra("query", q)
+            if (SearchIndex.count(this) == 0) {
+                startActivity(p) // not set up yet: the setup screen explains it
+            } else {
+                val i = Intent(this, FolderActivity::class.java)
+                i.putExtra("mode", "phone")
+                i.putExtra("query", q)
+                startActivity(i)
+            }
+            return
+        }
         val i = Intent(this, FolderActivity::class.java)
         i.putExtra("mode", "search")
         i.putExtra("query", q)
@@ -359,7 +373,7 @@ class MainActivity : Activity() {
         val gridMode = sp.getString("foldersLayout", "list") == "grid"
         var dirs = Sorter.sortFolders(userFolders(), key, desc)
         val q = searchBox.text.toString().trim().lowercase()
-        if (q.isNotEmpty() && scope != "Pictures") {
+        if (q.isNotEmpty() && (scope == "All" || scope == "Folders")) {
             dirs = dirs.filter { it.name.lowercase().contains(q) }
         }
         if (dirs.isEmpty()) {

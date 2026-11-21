@@ -276,6 +276,7 @@ object Locks {
 
     fun lockFolder(ctx: Context, dir: File) {
         sp(ctx).edit().putBoolean(dir.name, true).apply()
+        SearchIndex.removeFolder(ctx, dir.path)
         try {
             File(dir, ".nomedia").createNewFile()
         } catch (_: Exception) {

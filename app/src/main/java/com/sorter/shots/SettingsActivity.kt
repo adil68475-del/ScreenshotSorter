@@ -223,6 +223,13 @@ class SettingsActivity : Activity() {
 
         ai.addView(
             Ui.row(
+                this, "Search my phone",
+                "Find any old screenshot by typing a site name, a chat name or a word from it.",
+                link("Open ›")
+            ) { startActivity(Intent(this, PhoneSearchActivity::class.java)) }
+        )
+        ai.addView(
+            Ui.row(
                 this, "Organize old screenshots",
                 "Sorts the screenshots already on your phone into folders. You approve each group.",
                 link("Start ›")

@@ -17,7 +17,7 @@ import java.io.File
 // On-device "AI": ML Kit looks at the picture (what is in it + any text), and the app
 // remembers which folder you chose for pictures like it. Nothing is uploaded.
 object Brain {
-    class Analysis(val labels: List<String>, val words: List<String>, val links: List<String> = emptyList()) {
+    class Analysis(val labels: List<String>, val words: List<String>, val links: List<String> = emptyList(), val fullText: String = "") {
         val features: List<String> get() = labels.map { "l:$it" } + words.map { "w:$it" }
     }
 
@@ -115,7 +115,7 @@ object Brain {
             labelStep(img, wantLabels) { labels ->
                 textStep(img) { text ->
                     codeStep(img) { codes ->
-                        done(Analysis(labels, keywords(text), linksFrom(text, codes)))
+                        done(Analysis(labels, keywords(text), linksFrom(text, codes), text))
                     }
                 }
             }
